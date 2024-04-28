@@ -5,71 +5,42 @@ use std::path::Path;
 
 use obj::{load_obj, Obj, TexturedVertex};
 
+struct Input {
+    ibo: Ibo,
+    vbo: Vbo,
+    vao: Vao,
+    data: Vec<f32>,
+}
+
 pub struct Mesh {
-    v_ibo: Ibo,
-    v_vbo: Vbo,
-    v_vao: Vao,
-
-    n_ibo: Ibo,
-    n_vbo: Vbo,
-    n_vao: Vao,
-
-    t_ibo: Ibo,
-    t_vbo: Vbo,
-    t_vao: Vao,
-
-    texture: Texture,
+    inputs: Vec<Input>,
     indices: Vec<u16>,
-    vertices: Vec<f32>,
-    normals: Vec<f32>,
-    uv: Vec<f32>,
+    texture: Texture,
 }
 
 impl Mesh {
-    pub fn new(
-        indices: Vec<u16>,
-        vertices: Vec<f32>,
-        normals: Vec<f32>,
-        uv: Vec<f32>,
-        texture_filename: &str,
-    ) -> Self {
-        // Vertex inputs
-        let v_ibo = Ibo::gen();
-        let v_vao = Vao::gen();
-        let v_vbo = Vbo::gen();
+    pub fn new(indices: Vec<u16>, datas: Vec<Vec<f32>>, texture_filename: &str) -> Self {
+        let inputs: Vec<Input> = datas
+            .iter()
+            .map(|data| Input {
+                ibo: Ibo::gen(),
+                vao: Vao::gen(),
+                vbo: Vbo::gen(),
+                data: data.to_vec(),
+            })
+            .collect();
 
-        // Normal inputs
-        let n_ibo = Ibo::gen();
-        let n_vao = Vao::gen();
-        let n_vbo = Vbo::gen();
-
-        // // Texture UV inputs
-        let t_ibo = Ibo::gen();
-        let t_vao = Vao::gen();
-        let t_vbo = Vbo::gen();
-
-        v_vao.set(0);
-        n_vao.set(1);
-        t_vao.set(2);
+        for i in 0..inputs.len() {
+            inputs[i].vao.set(i as u32)
+        }
 
         let texture = Texture::new();
         texture.load(&Path::new(texture_filename)).unwrap();
 
         Mesh {
-            v_ibo,
-            v_vao,
-            v_vbo,
-            n_ibo,
-            n_vao,
-            n_vbo,
-            t_ibo,
-            t_vao,
-            t_vbo,
+            inputs,
             texture,
             indices,
-            vertices,
-            normals,
-            uv,
         }
     }
 
@@ -81,8 +52,9 @@ impl Mesh {
         let vertices = flatten_positions(&vb);
         let normals = flatten_normals(&vb);
         let uv = flatten_uv(&vb);
+        let data = vec![vertices, normals, uv];
 
-        Self::new(indices, vertices, normals, uv, texture_filename)
+        Self::new(indices, data, texture_filename)
     }
 
     pub fn set(&self, program: u32) {
@@ -90,17 +62,11 @@ impl Mesh {
         let uniform = CString::new("texture0").unwrap();
         unsafe { gl::Uniform1i(gl::GetUniformLocation(program, uniform.as_ptr()), 0) };
 
-        self.v_vbo.set(&self.vertices);
-        self.v_vao.enable(0);
-        self.v_ibo.set(&vec_u32_from_vec_u16(&self.indices));
-
-        self.n_vbo.set(&self.normals);
-        self.n_vao.enable(1);
-        self.n_ibo.set(&vec_u32_from_vec_u16(&self.indices));
-
-        self.t_vbo.set(&self.uv);
-        self.t_vao.enable(2);
-        self.t_ibo.set(&vec_u32_from_vec_u16(&self.indices));
+        for i in 0..self.inputs.len() {
+            self.inputs[i].vbo.set(&self.inputs[i].data);
+            self.inputs[i].vao.enable(i as u32);
+            self.inputs[i].ibo.set(&vec_u32_from_vec_u16(&self.indices));
+        }
     }
 
     pub fn indices_len(&self) -> i32 {

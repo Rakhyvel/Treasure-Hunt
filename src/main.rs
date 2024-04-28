@@ -6,6 +6,17 @@ use std::cell::RefCell;
 use engine::app::*;
 use scenes::island::Island;
 
+// TODO:
+// x Island generation
+// x Camera movement
+// - Trees
+// - Text
+// - Health bar
+// - Maps & Treasure
+// - Ghouls
+// - Menu
+// - Save serialization
+
 fn main() -> Result<(), String> {
     run(800, 600, "Treasure Hunt", &|_app| {
         RefCell::new(Box::new(Island::new()))

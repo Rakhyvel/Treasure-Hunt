@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::time::Instant;
 
 use sdl2::event::{Event, WindowEvent};
+use sdl2::keyboard::Scancode;
 use sdl2::sys::{SDL_GetPerformanceCounter, SDL_GetPerformanceFrequency};
 use sdl2::video::SwapInterval;
 use sdl2::Sdl;
@@ -65,6 +66,8 @@ pub fn run(
         gl::DepthFunc(gl::LESS);
         gl::Enable(gl::CULL_FACE);
         gl::Enable(gl::MULTISAMPLE);
+        gl::Enable(gl::BLEND);
+        gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
     }
 
     let mut app = App {
@@ -93,6 +96,7 @@ pub fn run(
     let mut previous = 0;
     let mut lag = 0;
     let mut elapsed;
+    let mut ticks = 0;
     const DELTA_T: u128 = 16;
     while app.running {
         app.seconds = time.elapsed().as_secs_f32();
@@ -106,9 +110,16 @@ pub fn run(
         while lag >= DELTA_T {
             app.reset_input();
             app.poll_input();
+            app.sdl_context.mouse().warp_mouse_in_window(
+                &window,
+                app.screen_width / 2,
+                app.screen_height / 2,
+            );
+            app.sdl_context.mouse().set_relative_mouse_mode(true);
 
             if let Some(scene_ref) = app.scene_stack.last() {
                 scene_ref.borrow_mut().update(&app);
+                ticks += 1;
             }
 
             if !scene_stale {
@@ -122,7 +133,7 @@ pub fn run(
         if !scene_stale {
             unsafe {
                 gl::Viewport(0, 0, app.screen_width, app.screen_height);
-                gl::ClearColor(0. / 255., 0. / 255., 0. / 255., 1.0);
+                gl::ClearColor(172. / 255., 205. / 255., 248. / 255., 1.0);
                 gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
             }
             if let Some(scene_ref) = app.scene_stack.last() {
@@ -135,8 +146,9 @@ pub fn run(
         let freq = unsafe { SDL_GetPerformanceFrequency() };
         let seconds = (end as f64 - (start as f64)) / (freq as f64);
         if seconds > 5.0 {
-            println!("5 seconds");
+            println!("5 seconds; ticks: {}", ticks);
             start = end as u128;
+            ticks = 0;
         }
     }
     Ok(())
@@ -192,6 +204,9 @@ impl App {
                 Event::KeyDown { scancode, .. } => match scancode {
                     Some(sc) => {
                         self.keys[sc as usize] = true;
+                        if self.keys[Scancode::Escape as usize] {
+                            self.running = false
+                        }
                     }
                     None => {}
                 },

@@ -25,7 +25,7 @@ void main()
     vec3 l = normalize( LightDirection_cameraspace );
     // Direction to the eye, in camera space
     vec3 e = normalize( eye_direction_cameraspace );
-    float cosTheta = clamp(dot(n, l), 0.2, 1);
+    float cosTheta = clamp(dot(n, l), 0, 1);
 
-    Color = vec4(0.1 * ambient_color + material_color * LightColor * cosTheta, texture_alpha);
+    Color = vec4(0.0 * ambient_color + material_color * LightColor * cosTheta, texture_alpha);
 }

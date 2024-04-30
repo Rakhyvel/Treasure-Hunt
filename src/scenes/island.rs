@@ -21,6 +21,7 @@ const UNIT_PER_METER: f32 = 0.1;
 const PERSON_HEIGHT: f32 = 1.6764 * UNIT_PER_METER;
 
 pub const QUAD_DATA: &[u8] = include_bytes!("../../res/quad.obj");
+pub const CONE_DATA: &[u8] = include_bytes!("../../res/cone.obj");
 
 pub struct Island {
     world: World,
@@ -28,6 +29,8 @@ pub struct Island {
     tiles: Vec<f32>,
     grass_tile: Mesh,
     water_tiles: Mesh,
+    tree_mesh: Mesh,
+    trees: Vec<nalgebra_glm::Vec3>,
     program: Program,
     camera: Camera,
     vel_z: f32,
@@ -36,8 +39,6 @@ pub struct Island {
     pitch: f32,
 
     t: f32,
-    prev_jump: f32,
-    sun_dir: nalgebra_glm::Vec3,
 }
 
 fn create_mesh(tiles: &Vec<f32>) -> (Vec<u16>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
@@ -99,13 +100,13 @@ fn create_mesh(tiles: &Vec<f32>) -> (Vec<u16>, Vec<f32>, Vec<f32>, Vec<f32>, Vec
     }
 
     for i in 0..(MAP_SIZE * MAP_SIZE) {
-        indices.push(4 * i as u16 + 0);
-        indices.push(4 * i as u16 + 1);
-        indices.push(4 * i as u16 + 2);
+        indices.push((4 * i) as u16 + 0);
+        indices.push((4 * i) as u16 + 1);
+        indices.push((4 * i) as u16 + 2);
 
-        indices.push(4 * i as u16 + 1);
-        indices.push(4 * i as u16 + 3);
-        indices.push(4 * i as u16 + 2);
+        indices.push((4 * i) as u16 + 1);
+        indices.push((4 * i) as u16 + 3);
+        indices.push((4 * i) as u16 + 2);
     }
 
     (indices, vertices, normals, uv, colors)
@@ -240,7 +241,7 @@ fn create_bulge(map: &mut Vec<f32>) {
             let d = ((xo * xo + yo * yo) as f32).sqrt();
             let t = z * 0.7; // Tweak me to make the island smoother/perlinier
             let s: f32 = 0.25; // Tweak me to make the island pointier
-            let m: f32 = 70.0; // Tweak me to make the island wider
+            let m: f32 = MAP_SIZE as f32 * 0.7; // Tweak me to make the island wider
             let bulge: f32 = (1.0 / (2.0 * pi::<f32>() * s.powf(2.0)))
                 * (-((d / m).powf(2.0)) / (2.0 * s.powf(2.0))).exp();
             map[x + y * MAP_SIZE] = ((1.0 - t) * bulge + t * z).powf(1.0);
@@ -254,14 +255,10 @@ impl Scene for Island {
 
         self.control(app);
 
-        self.vel_z -= 2.0 * UNIT_PER_METER / 62.5;
+        self.vel_z -= 0.1 * UNIT_PER_METER / 62.5;
         self.camera.position.z += self.vel_z;
         let feet_height =
             get_z_scaled_interpolated(&self.tiles, self.camera.position.x, self.camera.position.y);
-        println!(
-            "Found it! ({}, {}, {})",
-            self.camera.position.x, self.camera.position.y, feet_height
-        );
         if self.camera.position.z - PERSON_HEIGHT <= feet_height {
             self.camera.position.z = feet_height + PERSON_HEIGHT;
             self.feet_on_ground = true;
@@ -276,8 +273,6 @@ impl Scene for Island {
         );
         let facing_vec = (rot_matrix * nalgebra_glm::vec4(1.0, 0.0, 0.0, 0.0)).xyz();
         self.camera.lookat = self.camera.position + facing_vec;
-
-        self.sun_dir = nalgebra_glm::vec3(0.0, 0.0, 1.0).normalize();
     }
 
     fn render(&mut self, app: &App) {
@@ -300,6 +295,7 @@ impl Scene for Island {
                 app.screen_width as f32,
                 app.screen_height as f32,
             );
+            gl::Uniform3f(u_sun_dir.id, 0.0, 0.1, 1.0);
             gl::UniformMatrix4fv(
                 u_model_matrix.id,
                 1,
@@ -318,7 +314,6 @@ impl Scene for Island {
                 gl::FALSE,
                 &proj_matrix.columns(0, 4)[0],
             );
-            gl::Uniform3f(u_sun_dir.id, self.sun_dir.x, self.sun_dir.y, self.sun_dir.z);
 
             self.grass_tile.set(self.program.id());
             gl::DrawElements(
@@ -329,18 +324,16 @@ impl Scene for Island {
             );
 
             let mut model_matrix = nalgebra_glm::one();
-            let pos = nalgebra_glm::vec3(50.0, 50.0, SCALE / 2.0);
+            let pos = nalgebra_glm::vec3(MAP_SIZE as f32 / 2.0, MAP_SIZE as f32 / 2.0, SCALE / 2.0);
             model_matrix = nalgebra_glm::translate(&model_matrix, &pos);
             model_matrix =
                 nalgebra_glm::scale(&model_matrix, &nalgebra_glm::vec3(1000.0, 1000.0, 1.0));
-
             gl::UniformMatrix4fv(
                 u_model_matrix.id,
                 1,
                 gl::FALSE,
                 &model_matrix.columns(0, 4)[0],
             );
-
             self.water_tiles.set(self.program.id());
             gl::DrawElements(
                 gl::TRIANGLES,
@@ -348,6 +341,25 @@ impl Scene for Island {
                 gl::UNSIGNED_INT,
                 0 as *const _,
             );
+
+            for tree in &self.trees {
+                let mut model_matrix = nalgebra_glm::one();
+                let pos = nalgebra_glm::vec3(tree.x, tree.y, tree.z + 1.0);
+                model_matrix = nalgebra_glm::translate(&model_matrix, &pos);
+                gl::UniformMatrix4fv(
+                    u_model_matrix.id,
+                    1,
+                    gl::FALSE,
+                    &model_matrix.columns(0, 4)[0],
+                );
+                self.tree_mesh.set(self.program.id());
+                gl::DrawElements(
+                    gl::TRIANGLES,
+                    self.tree_mesh.indices_len(),
+                    gl::UNSIGNED_INT,
+                    0 as *const _,
+                );
+            }
         }
     }
 }
@@ -360,9 +372,13 @@ impl Island {
         create_bulge(&mut map);
         let mut spawn_point = nalgebra_glm::vec3((MAP_SIZE / 2) as f32, (MAP_SIZE / 2) as f32, 1.0);
         for x in (MAP_SIZE / 2)..MAP_SIZE {
-            let height = get_z_scaled_interpolated(&map, x as f32, 50.0);
+            let height = get_z_scaled_interpolated(&map, x as f32, MAP_SIZE as f32 / 2.0);
             if height < SCALE / 2.0 {
-                spawn_point = nalgebra_glm::vec3(x as f32 - 1.0, 50.0, height + PERSON_HEIGHT);
+                spawn_point = nalgebra_glm::vec3(
+                    x as f32 - 1.0,
+                    MAP_SIZE as f32 / 2.0,
+                    height + PERSON_HEIGHT,
+                );
                 break;
             }
         }
@@ -371,6 +387,7 @@ impl Island {
         let (i, v, n, u, c) = create_mesh(&map);
         let grass = Mesh::new(i, vec![v, n, u, c], "res/grass.png");
         let water = Mesh::from_obj(QUAD_DATA, "res/water.png");
+        let tree = Mesh::from_obj(CONE_DATA, "res/grass.png");
         let program = create_program().unwrap();
         program.set();
         let camera = Camera::new(
@@ -380,11 +397,28 @@ impl Island {
             0.94, // 50mm focal length (iPhone 13 camera)
         );
 
+        let mut tree_pos = vec![];
+        for _ in 0..MAP_SIZE {
+            loop {
+                let (x, y) = (
+                    rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
+                    rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
+                );
+                let height = get_z_scaled_interpolated(&map, x, y);
+                if height >= SCALE * 1.2 || (height >= SCALE * 0.5 && rng.gen::<f32>() <= 0.1) {
+                    tree_pos.push(nalgebra_glm::vec3(x, y, height));
+                    break;
+                }
+            }
+        }
+
         Self {
             world,
             tiles: map,
             grass_tile: grass,
             water_tiles: water,
+            tree_mesh: tree,
+            trees: tree_pos,
             program,
             camera,
             vel_z: 0.0,
@@ -392,8 +426,6 @@ impl Island {
             facing: 0.0,
             pitch: 0.0,
             t: 0.0,
-            prev_jump: 0.0,
-            sun_dir: nalgebra_glm::vec3(0.0, 0.0, 0.0),
         }
     }
 
@@ -402,36 +434,38 @@ impl Island {
         let curr_s_state = app.keys[Scancode::S as usize];
         let curr_a_state = app.keys[Scancode::A as usize];
         let curr_d_state = app.keys[Scancode::D as usize];
+        let curr_shift_state = app.keys[Scancode::LShift as usize];
         let curr_space_state = app.keys[Scancode::Space as usize];
-        const WALK_SPEED: f32 = 10.0 * UNIT_PER_METER / 62.5;
+        let walk_speed: f32 =
+            10.0 * UNIT_PER_METER / 62.5 * if curr_shift_state { 2.0 } else { 1.0 };
         let view_speed: f32 = 0.000005 * (app.screen_width as f32);
         let facing_vec = nalgebra_glm::vec3(self.facing.cos(), self.facing.sin(), 0.0);
         let sideways_vec = nalgebra_glm::cross(&self.camera.up, &facing_vec);
         let curr_height =
             get_z_scaled_interpolated(&self.tiles, self.camera.position.x, self.camera.position.y);
         if curr_w_state {
-            let new_pos = self.camera.position + facing_vec * WALK_SPEED;
+            let new_pos = self.camera.position + facing_vec * walk_speed;
             let new_height = get_z_scaled_interpolated(&self.tiles, new_pos.x, new_pos.y);
             if !self.feet_on_ground || curr_height <= SCALE / 2.0 || new_height > SCALE / 2.0 {
                 self.camera.position = new_pos
             }
         }
         if curr_s_state {
-            let new_pos = self.camera.position - facing_vec * WALK_SPEED;
+            let new_pos = self.camera.position - facing_vec * walk_speed;
             let new_height = get_z_scaled_interpolated(&self.tiles, new_pos.x, new_pos.y);
             if !self.feet_on_ground || curr_height <= SCALE / 2.0 || new_height > SCALE / 2.0 {
                 self.camera.position = new_pos
             }
         }
         if curr_a_state {
-            let new_pos = self.camera.position + sideways_vec * WALK_SPEED;
+            let new_pos = self.camera.position + sideways_vec * walk_speed;
             let new_height = get_z_scaled_interpolated(&self.tiles, new_pos.x, new_pos.y);
             if !self.feet_on_ground || curr_height <= SCALE / 2.0 || new_height > SCALE / 2.0 {
                 self.camera.position = new_pos
             }
         }
         if curr_d_state {
-            let new_pos = self.camera.position - sideways_vec * WALK_SPEED;
+            let new_pos = self.camera.position - sideways_vec * walk_speed;
             let new_height = get_z_scaled_interpolated(&self.tiles, new_pos.x, new_pos.y);
             if !self.feet_on_ground || curr_height <= SCALE / 2.0 || new_height > SCALE / 2.0 {
                 self.camera.position = new_pos

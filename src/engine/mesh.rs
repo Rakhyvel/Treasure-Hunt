@@ -52,7 +52,9 @@ impl Mesh {
         let vertices = flatten_positions(&vb);
         let normals = flatten_normals(&vb);
         let uv = flatten_uv(&vb);
-        let data = vec![vertices, normals, uv];
+        let colors = vec![1.0; vertices.len()];
+
+        let data = vec![vertices, normals, uv, colors];
 
         Self::new(indices, data, texture_filename)
     }

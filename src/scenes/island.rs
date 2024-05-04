@@ -1,15 +1,16 @@
-use std::f32::consts::PI;
+use std::{f32::consts::PI, path::Path};
 
 use nalgebra_glm::pi;
 use rand::Rng;
-use sdl2::keyboard::Scancode;
+use sdl2::{keyboard::Scancode, pixels::Color};
 
 use crate::{
     engine::{
         camera::Camera,
         mesh::Mesh,
-        objects::{create_program, Program, Uniform},
+        objects::{create_program, Program, Texture, Uniform},
         perlin::*,
+        text::{FontMgr, Text},
         world::World,
     },
     App, Scene,
@@ -17,7 +18,7 @@ use crate::{
 
 const MAP_SIZE: usize = 100;
 const SCALE: f32 = 2.0;
-const UNIT_PER_METER: f32 = 0.1;
+const UNIT_PER_METER: f32 = 0.2;
 const PERSON_HEIGHT: f32 = 1.6764 * UNIT_PER_METER;
 
 pub const QUAD_DATA: &[u8] = include_bytes!("../../res/quad.obj");
@@ -27,9 +28,13 @@ pub struct Island {
     world: World,
 
     tiles: Vec<f32>,
+
+    text: Text,
+
     grass_tile: Mesh,
     water_tiles: Mesh,
     tree_mesh: Mesh,
+
     trees: Vec<nalgebra_glm::Vec3>,
     program: Program,
     camera: Camera,
@@ -48,68 +53,92 @@ fn create_mesh(tiles: &Vec<f32>) -> (Vec<u16>, Vec<f32>, Vec<f32>, Vec<f32>, Vec
     let mut uv = Vec::<f32>::new();
     let mut colors = Vec::<f32>::new();
 
+    let mut i = 0;
     for y in 0..(MAP_SIZE - 1) {
         for x in 0..(MAP_SIZE - 1) {
-            for i in 0..4 {
-                // yx: 00 01 10 11
-                let xo = i & 1;
-                let yo = (i & 2) >> 1;
-                let z = get_z(tiles, x + xo, y + yo);
-                let z_scaled = get_z_scaled(tiles, x + xo, y + yo);
+            // Left triangle |\
+            let offsets = vec![(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)];
+            add_triangle(
+                tiles,
+                &mut indices,
+                &mut vertices,
+                &mut normals,
+                &mut uv,
+                &mut colors,
+                x as f32,
+                y as f32,
+                &offsets,
+                &mut i,
+            );
 
-                add_vertex(&mut vertices, (x + xo) as f32, (y + yo) as f32, z_scaled);
-                add_uv(&mut uv, xo as f32, yo as f32);
-                if z > 0.75 {
-                    colors.push(0.4);
-                    colors.push(0.5);
-                    colors.push(0.1);
-                } else {
-                    colors.push(0.9);
-                    colors.push(0.9);
-                    colors.push(0.7);
-                }
-            }
+            // Right triangle \|
+            let offsets = vec![(1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+            add_triangle(
+                tiles,
+                &mut indices,
+                &mut vertices,
+                &mut normals,
+                &mut uv,
+                &mut colors,
+                x as f32,
+                y as f32,
+                &offsets,
+                &mut i,
+            );
         }
-    }
-
-    for y in 0..(MAP_SIZE - 1) {
-        for x in 0..(MAP_SIZE - 1) {
-            for i in 0..4 {
-                let xo = i & 1;
-                let yo = (i & 2) >> 1;
-                let x = x + xo;
-                let y = y + yo;
-                if x == 0 || y == 0 || x >= MAP_SIZE - 2 || y >= MAP_SIZE - 2 {
-                    normals.push(0.0);
-                    normals.push(0.0);
-                    normals.push(1.0);
-                } else {
-                    let mut normal = nalgebra_glm::vec3(
-                        get_z_scaled(tiles, x - 1, y) - get_z_scaled(tiles, x + 1, y),
-                        get_z_scaled(tiles, x, y + 1) - get_z_scaled(tiles, x, y - 1),
-                        0.2,
-                    );
-                    normal.normalize_mut();
-
-                    normals.push(normal.x);
-                    normals.push(normal.y);
-                    normals.push(1.0);
-                }
-            }
-        }
-    }
-
-    for i in 0..(MAP_SIZE * MAP_SIZE) {
-        indices.push((4 * i) as u16 + 0);
-        indices.push((4 * i) as u16 + 1);
-        indices.push((4 * i) as u16 + 2);
-
-        indices.push((4 * i) as u16 + 1);
-        indices.push((4 * i) as u16 + 3);
-        indices.push((4 * i) as u16 + 2);
     }
 
     (indices, vertices, normals, uv, colors)
+}
+
+fn add_triangle(
+    tiles: &Vec<f32>,
+    indices: &mut Vec<u16>,
+    vertices: &mut Vec<f32>,
+    normals: &mut Vec<f32>,
+    uv: &mut Vec<f32>,
+    colors: &mut Vec<f32>,
+    x: f32,
+    y: f32,
+    offsets: &Vec<(f32, f32)>,
+    i: &mut u16,
+) {
+    let mut sum_z = 0.0;
+    let tri_verts: Vec<nalgebra_glm::Vec3> = offsets
+        .iter()
+        .map(|(xo, yo)| {
+            let z_scaled = get_z_scaled(tiles, (x + xo) as usize, (y + yo) as usize);
+            let mapval = nalgebra_glm::vec3(x + xo, y + yo, z_scaled);
+            sum_z += get_z(tiles, (x + xo) as usize, (y + yo) as usize);
+            add_vertex(vertices, x + xo, y + yo, z_scaled);
+            add_uv(uv, *xo as f32, *yo as f32);
+            indices.push(*i);
+            *i += 1;
+            mapval
+        })
+        .collect();
+
+    let avg_z = sum_z / 3.0;
+    for _ in 0..3 {
+        if avg_z > 0.75 {
+            colors.push(0.4);
+            colors.push(0.5);
+            colors.push(0.1);
+        } else {
+            colors.push(0.9);
+            colors.push(0.9);
+            colors.push(0.7);
+        }
+    }
+
+    let edge1 = tri_verts[1] - tri_verts[0];
+    let edge2 = tri_verts[2] - tri_verts[0];
+    let normal = nalgebra_glm::cross(&edge1, &edge2).normalize();
+    for _ in 0..3 {
+        normals.push(normal.x);
+        normals.push(normal.y);
+        normals.push(normal.z);
+    }
 }
 
 fn get_z(tiles: &Vec<f32>, x: usize, y: usize) -> f32 {
@@ -239,7 +268,7 @@ fn create_bulge(map: &mut Vec<f32>) {
             let xo = (x as f32) - (MAP_SIZE as f32) / 2.0;
             let yo = (y as f32) - (MAP_SIZE as f32) / 2.0;
             let d = ((xo * xo + yo * yo) as f32).sqrt();
-            let t = z * 0.7; // Tweak me to make the island smoother/perlinier
+            let t = 0.6; // Tweak me to make the island smoother/perlinier
             let s: f32 = 0.25; // Tweak me to make the island pointier
             let m: f32 = MAP_SIZE as f32 * 0.7; // Tweak me to make the island wider
             let bulge: f32 = (1.0 / (2.0 * pi::<f32>() * s.powf(2.0)))
@@ -255,7 +284,7 @@ impl Scene for Island {
 
         self.control(app);
 
-        self.vel_z -= 0.1 * UNIT_PER_METER / 62.5;
+        self.vel_z -= 1.3 * UNIT_PER_METER / 62.5;
         self.camera.position.z += self.vel_z;
         let feet_height =
             get_z_scaled_interpolated(&self.tiles, self.camera.position.x, self.camera.position.y);
@@ -276,6 +305,20 @@ impl Scene for Island {
     }
 
     fn render(&mut self, app: &App) {
+        unsafe {
+            let day_color = nalgebra_glm::vec3(172.0, 205.0, 248.0);
+            let night_color = nalgebra_glm::vec3(5.0, 6.0, 7.0);
+            let red_color = nalgebra_glm::vec3(124.0, 102.0, 86.0);
+            let do_color = if (self.t * 0.001).cos() > 0.0 {
+                day_color
+            } else {
+                night_color
+            };
+            let dnf = (self.t * 0.001).sin().powf(10.0);
+            let result = dnf * red_color + (1.0 - dnf) * do_color;
+            gl::ClearColor(result.x / 255., result.y / 255., result.z / 255., 1.0);
+        }
+
         self.program.set();
         let (x, y) = (0.0, 0.0);
         let pos = nalgebra_glm::vec3((x as f32) * 1.0, (y as f32) * 1.0, 0.0);
@@ -295,7 +338,12 @@ impl Scene for Island {
                 app.screen_width as f32,
                 app.screen_height as f32,
             );
-            gl::Uniform3f(u_sun_dir.id, 0.0, 0.1, 1.0);
+            gl::Uniform3f(
+                u_sun_dir.id,
+                0.0,
+                (self.t * 0.001).sin(),
+                (self.t * 0.001).cos(),
+            );
             gl::UniformMatrix4fv(
                 u_model_matrix.id,
                 1,
@@ -360,6 +408,8 @@ impl Scene for Island {
                     0 as *const _,
                 );
             }
+
+            self.text.draw(app);
         }
     }
 }
@@ -368,7 +418,7 @@ impl Island {
     pub fn new() -> Self {
         let mut rng = rand::thread_rng();
         let world = World::new();
-        let mut map = generate(MAP_SIZE, 10.5, rng.gen());
+        let mut map = generate(MAP_SIZE, 0.1, rng.gen());
         create_bulge(&mut map);
         let mut spawn_point = nalgebra_glm::vec3((MAP_SIZE / 2) as f32, (MAP_SIZE / 2) as f32, 1.0);
         for x in (MAP_SIZE / 2)..MAP_SIZE {
@@ -383,18 +433,32 @@ impl Island {
             }
         }
 
-        // let grass = Mesh::from_obj(QUAD_DATA, "res/earth.png");
+        let font_mgr = FontMgr::new();
+        let font = font_mgr
+            .load_font("res/HelveticaNeue Medium.ttf", 16)
+            .unwrap();
+        let text = Text::new("i hate this shit", font, Color::RGBA(255, 0, 0, 255));
+
         let (i, v, n, u, c) = create_mesh(&map);
-        let grass = Mesh::new(i, vec![v, n, u, c], "res/grass.png");
-        let water = Mesh::from_obj(QUAD_DATA, "res/water.png");
-        let tree = Mesh::from_obj(CONE_DATA, "res/grass.png");
-        let program = create_program().unwrap();
+        let grass = Mesh::new(i, vec![v, n, u, c], Texture::from_png("res/grass.png"));
+        let water = Mesh::from_obj(
+            QUAD_DATA,
+            nalgebra_glm::vec3(1.0, 1.0, 1.0),
+            Texture::from_png("res/water.png"),
+        );
+        let tree = Mesh::from_obj(
+            CONE_DATA,
+            nalgebra_glm::vec3(0.2, 0.25, 0.0),
+            Texture::from_png("res/grass.png"),
+        );
+
+        let program = create_program(include_str!("../.vert"), include_str!("../.frag")).unwrap();
         program.set();
         let camera = Camera::new(
             spawn_point,
             nalgebra_glm::vec3(0.0, 0.0, 0.0),
             nalgebra_glm::vec3(0.0, 0.0, 1.0),
-            0.94, // 50mm focal length (iPhone 13 camera)
+            0.9,
         );
 
         let mut tree_pos = vec![];
@@ -405,7 +469,7 @@ impl Island {
                     rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
                 );
                 let height = get_z_scaled_interpolated(&map, x, y);
-                if height >= SCALE * 1.2 || (height >= SCALE * 0.5 && rng.gen::<f32>() <= 0.1) {
+                if height >= SCALE {
                     tree_pos.push(nalgebra_glm::vec3(x, y, height));
                     break;
                 }
@@ -415,6 +479,7 @@ impl Island {
         Self {
             world,
             tiles: map,
+            text,
             grass_tile: grass,
             water_tiles: water,
             tree_mesh: tree,
@@ -473,7 +538,7 @@ impl Island {
         }
         if self.feet_on_ground {
             if curr_space_state {
-                self.vel_z += 0.05;
+                self.vel_z += 0.5 * UNIT_PER_METER;
             }
         }
         self.facing -= view_speed * app.mouse_rel_x as f32;

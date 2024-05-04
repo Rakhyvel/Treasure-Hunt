@@ -30,10 +30,10 @@ void main()
     }
 
     // Vertex normal, converted to camera space
-	Normal_cameraspace = (u_model_matrix * vec4(Normal_modelspace, 1.0)).xyz;
+	Normal_cameraspace = (vec4(Normal_modelspace, 1.0)).xyz;
     
     // Vector from vector to eye in camera space
-	LightDirection_cameraspace = (u_model_matrix * vec4(u_sun_dir, 1.0)).xyz;
+	LightDirection_cameraspace = (vec4(u_sun_dir, 1.0)).xyz;
 
     eye_direction_cameraspace = -view_pos.xyz;
 

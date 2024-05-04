@@ -9,11 +9,11 @@ use scenes::island::Island;
 // TODO:
 // x Island generation
 // x Camera movement
-// - Trees
+// x Trees
 // - Text
-// - Health bar
 // - Maps & Treasure
-// - Ghouls
+// - Enemy mobs
+// - Health bar, weapons
 // - Menu
 // - Save serialization
 

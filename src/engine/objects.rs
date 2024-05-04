@@ -135,14 +135,17 @@ fn create_whitespace_cstring_with_len(len: usize) -> CString {
     unsafe { CString::from_vec_unchecked(buffer) }
 }
 
-pub fn create_program() -> Result<Program, &'static str> {
+pub fn create_program(
+    vert_data: &'static str,
+    frag_data: &'static str,
+) -> Result<Program, &'static str> {
     let vert_shader = Shader::from_source(
-        &CString::new(include_str!("../.vert")).unwrap(), // TODO: Load this at runtime
+        &CString::new(vert_data).unwrap(), // TODO: Load this at runtime
         gl::VERTEX_SHADER,
     )
     .unwrap();
     let frag_shader = Shader::from_source(
-        &CString::new(include_str!("../.frag")).unwrap(), // TODO: Load this at runtime
+        &CString::new(frag_data).unwrap(), // TODO: Load this at runtime
         gl::FRAGMENT_SHADER,
     )
     .unwrap();
@@ -355,6 +358,54 @@ impl Texture {
         let mut id: GLuint = 0;
         unsafe { gl::GenTextures(1, &mut id) }
         Self { id }
+    }
+
+    pub fn from_png(texture_filename: &'static str) -> Self {
+        let texture = Texture::new();
+        texture.load(&Path::new(texture_filename)).unwrap();
+        texture
+    }
+
+    pub fn from_surface(surface: sdl2::surface::Surface) -> Self {
+        let texture = Texture::new();
+        unsafe {
+            texture.bind();
+
+            let width = surface.width() as i32;
+            let height = surface.height() as i32;
+            let format = match surface.pixel_format_enum() {
+                sdl2::pixels::PixelFormatEnum::RGB24 => gl::RGB,
+                sdl2::pixels::PixelFormatEnum::RGBA32 => gl::RGBA,
+                sdl2::pixels::PixelFormatEnum::ARGB8888 => gl::BGRA,
+                x => panic!("Lol! {:?}", x),
+            };
+
+            gl::TexImage2D(
+                gl::TEXTURE_2D,
+                0,
+                gl::RGBA as i32,
+                width,
+                height,
+                0,
+                format,
+                gl::UNSIGNED_BYTE,
+                surface.without_lock().unwrap().as_ptr() as *const std::ffi::c_void,
+            );
+
+            gl::TexParameteri(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_WRAP_S,
+                gl::CLAMP_TO_EDGE as GLint,
+            );
+            gl::TexParameteri(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_WRAP_T,
+                gl::CLAMP_TO_EDGE as GLint,
+            );
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as GLint);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as GLint);
+        }
+        texture
     }
 
     pub fn bind(&self) {

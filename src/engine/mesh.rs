@@ -5,21 +5,21 @@ use std::path::Path;
 
 use obj::{load_obj, Obj, TexturedVertex};
 
-struct Input {
+pub struct Input {
     ibo: Ibo,
     vbo: Vbo,
     vao: Vao,
-    data: Vec<f32>,
+    pub data: Vec<f32>,
 }
 
 pub struct Mesh {
-    inputs: Vec<Input>,
+    pub inputs: Vec<Input>,
     indices: Vec<u16>,
     texture: Texture,
 }
 
 impl Mesh {
-    pub fn new(indices: Vec<u16>, datas: Vec<Vec<f32>>, texture_filename: &str) -> Self {
+    pub fn new(indices: Vec<u16>, datas: Vec<Vec<f32>>, texture: Texture) -> Self {
         let inputs: Vec<Input> = datas
             .iter()
             .map(|data| Input {
@@ -34,9 +34,6 @@ impl Mesh {
             inputs[i].vao.set(i as u32)
         }
 
-        let texture = Texture::new();
-        texture.load(&Path::new(texture_filename)).unwrap();
-
         Mesh {
             inputs,
             texture,
@@ -44,7 +41,7 @@ impl Mesh {
         }
     }
 
-    pub fn from_obj(obj_file_data: &[u8], texture_filename: &str) -> Self {
+    pub fn from_obj(obj_file_data: &[u8], color: nalgebra_glm::Vec3, texture: Texture) -> Self {
         let obj: Obj<TexturedVertex> = load_obj(&obj_file_data[..]).unwrap();
         let vb: Vec<TexturedVertex> = obj.vertices;
 
@@ -52,11 +49,16 @@ impl Mesh {
         let vertices = flatten_positions(&vb);
         let normals = flatten_normals(&vb);
         let uv = flatten_uv(&vb);
-        let colors = vec![1.0; vertices.len()];
+        let colors = (0..vertices.len() / 3)
+            .flat_map(|_| {
+                let repeat = vec![color.x, color.y, color.z];
+                repeat.iter().cloned().collect::<Vec<_>>()
+            })
+            .collect();
 
         let data = vec![vertices, normals, uv, colors];
 
-        Self::new(indices, data, texture_filename)
+        Self::new(indices, data, texture)
     }
 
     pub fn set(&self, program: u32) {

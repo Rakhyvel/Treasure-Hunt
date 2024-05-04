@@ -1,11 +1,15 @@
 use std::cell::RefCell;
+use std::path::Path;
 use std::time::Instant;
 
 use sdl2::event::{Event, WindowEvent};
 use sdl2::keyboard::Scancode;
+use sdl2::pixels::Color;
 use sdl2::sys::{SDL_GetPerformanceCounter, SDL_GetPerformanceFrequency};
 use sdl2::video::SwapInterval;
 use sdl2::Sdl;
+
+use crate::engine::objects::Texture;
 
 pub struct App {
     // Screen stuff
@@ -26,6 +30,9 @@ pub struct App {
     pub mouse_left_down: bool,
     pub mouse_right_down: bool,
     pub mouse_wheel: f32,
+
+    // Goofy
+    // pub text: Texture,
 
     // Scene stack stuff
     scene_stack: Vec<RefCell<Box<dyn Scene>>>,
@@ -56,6 +63,8 @@ pub fn run(
     let _gl =
         gl::load_with(|s| video_subsystem.gl_get_proc_address(s) as *const std::os::raw::c_void);
 
+    // This is absolutely retarded. It's so retarded this has to be here. If anyone wants to add a new font I guess they have to edit this file? And only this file btw, it won't work anywhere else. Holy shit.
+
     window
         .subsystem()
         .gl_set_swap_interval(SwapInterval::VSync)
@@ -83,6 +92,7 @@ pub fn run(
         mouse_left_down: false,
         mouse_right_down: false,
         mouse_wheel: 0.0,
+        // text: texture_id,
         seconds: 0.0,
         scene_stack: Vec::new(),
     };
@@ -133,7 +143,6 @@ pub fn run(
         if !scene_stale {
             unsafe {
                 gl::Viewport(0, 0, app.screen_width, app.screen_height);
-                gl::ClearColor(172. / 255., 205. / 255., 248. / 255., 1.0);
                 gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
             }
             if let Some(scene_ref) = app.scene_stack.last() {
@@ -190,8 +199,8 @@ impl App {
                     _ => {}
                 },
 
-                Event::MouseWheel { precise_y, .. } => {
-                    self.mouse_wheel = precise_y;
+                Event::MouseWheel { y, .. } => {
+                    self.mouse_wheel = y as f32;
                 }
 
                 Event::Window { win_event, .. } => {

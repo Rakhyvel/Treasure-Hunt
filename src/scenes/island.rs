@@ -1,4 +1,4 @@
-use std::{f32::consts::PI, path::Path};
+use std::f32::consts::PI;
 
 use nalgebra_glm::pi;
 use rand::Rng;
@@ -6,12 +6,11 @@ use sdl2::{keyboard::Scancode, pixels::Color};
 
 use crate::{
     engine::{
-        camera::Camera,
+        camera::{OrthoCamera, PerspectiveCamera},
         mesh::Mesh,
-        objects::{create_program, Program, Texture, Uniform},
+        objects::{create_program, Program, Texture},
         perlin::*,
         text::{FontMgr, Text},
-        world::World,
     },
     App, Scene,
 };
@@ -25,8 +24,6 @@ pub const QUAD_DATA: &[u8] = include_bytes!("../../res/quad.obj");
 pub const CONE_DATA: &[u8] = include_bytes!("../../res/cone.obj");
 
 pub struct Island {
-    world: World,
-
     tiles: Vec<f32>,
 
     text: Text,
@@ -37,7 +34,8 @@ pub struct Island {
 
     trees: Vec<nalgebra_glm::Vec3>,
     program: Program,
-    camera: Camera,
+    camera: PerspectiveCamera,
+    ui_camera: OrthoCamera,
     vel_z: f32,
     feet_on_ground: bool,
     facing: f32,
@@ -319,105 +317,25 @@ impl Scene for Island {
             gl::ClearColor(result.x / 255., result.y / 255., result.z / 255., 1.0);
         }
 
-        self.program.set();
-        let (x, y) = (0.0, 0.0);
-        let pos = nalgebra_glm::vec3((x as f32) * 1.0, (y as f32) * 1.0, 0.0);
-        let mut model_matrix = nalgebra_glm::one();
-        model_matrix = nalgebra_glm::translate(&model_matrix, &pos);
-        let (view_matrix, proj_matrix) = self.camera.gen_view_proj_matrices();
+        Mesh::set_3d(
+            &self.program,
+            nalgebra_glm::vec3(0.0, (self.t * 0.001).sin(), (self.t * 0.001).cos()),
+            nalgebra_glm::vec2(app.screen_width as f32, app.screen_height as f32),
+        );
 
-        unsafe {
-            // These Uniforms allow us to pass data (ex: window size, elapsed time) to the GPU shaders
-            let u_model_matrix = Uniform::new(self.program.id(), "u_model_matrix").unwrap();
-            let u_view_matrix = Uniform::new(self.program.id(), "u_view_matrix").unwrap();
-            let u_proj_matrix = Uniform::new(self.program.id(), "u_proj_matrix").unwrap();
-            let u_resolution = Uniform::new(self.program.id(), "u_resolution").unwrap();
-            let u_sun_dir = Uniform::new(self.program.id(), "u_sun_dir").unwrap();
-            gl::Uniform2f(
-                u_resolution.id,
-                app.screen_width as f32,
-                app.screen_height as f32,
-            );
-            gl::Uniform3f(
-                u_sun_dir.id,
-                0.0,
-                (self.t * 0.001).sin(),
-                (self.t * 0.001).cos(),
-            );
-            gl::UniformMatrix4fv(
-                u_model_matrix.id,
-                1,
-                gl::FALSE,
-                &model_matrix.columns(0, 4)[0],
-            );
-            gl::UniformMatrix4fv(
-                u_view_matrix.id,
-                1,
-                gl::FALSE,
-                &view_matrix.columns(0, 4)[0],
-            );
-            gl::UniformMatrix4fv(
-                u_proj_matrix.id,
-                1,
-                gl::FALSE,
-                &proj_matrix.columns(0, 4)[0],
-            );
-
-            self.grass_tile.set(self.program.id());
-            gl::DrawElements(
-                gl::TRIANGLES,
-                self.grass_tile.indices_len(),
-                gl::UNSIGNED_INT,
-                0 as *const _,
-            );
-
-            let mut model_matrix = nalgebra_glm::one();
-            let pos = nalgebra_glm::vec3(MAP_SIZE as f32 / 2.0, MAP_SIZE as f32 / 2.0, SCALE / 2.0);
-            model_matrix = nalgebra_glm::translate(&model_matrix, &pos);
-            model_matrix =
-                nalgebra_glm::scale(&model_matrix, &nalgebra_glm::vec3(1000.0, 1000.0, 1.0));
-            gl::UniformMatrix4fv(
-                u_model_matrix.id,
-                1,
-                gl::FALSE,
-                &model_matrix.columns(0, 4)[0],
-            );
-            self.water_tiles.set(self.program.id());
-            gl::DrawElements(
-                gl::TRIANGLES,
-                self.water_tiles.indices_len(),
-                gl::UNSIGNED_INT,
-                0 as *const _,
-            );
-
-            for tree in &self.trees {
-                let mut model_matrix = nalgebra_glm::one();
-                let pos = nalgebra_glm::vec3(tree.x, tree.y, tree.z + 1.0);
-                model_matrix = nalgebra_glm::translate(&model_matrix, &pos);
-                gl::UniformMatrix4fv(
-                    u_model_matrix.id,
-                    1,
-                    gl::FALSE,
-                    &model_matrix.columns(0, 4)[0],
-                );
-                self.tree_mesh.set(self.program.id());
-                gl::DrawElements(
-                    gl::TRIANGLES,
-                    self.tree_mesh.indices_len(),
-                    gl::UNSIGNED_INT,
-                    0 as *const _,
-                );
-            }
-
-            self.text.draw(app);
+        self.grass_tile.draw(&self.program, &self.camera);
+        self.water_tiles.draw(&self.program, &self.camera);
+        for tree in &self.trees {
+            self.tree_mesh.position = *tree;
+            self.tree_mesh.draw(&self.program, &self.camera);
         }
+        self.text.draw(app, &self.ui_camera);
     }
 }
 
 impl Island {
     pub fn new() -> Self {
         let mut rng = rand::thread_rng();
-        let world = World::new();
         let mut map = generate(MAP_SIZE, 0.1, rng.gen());
         create_bulge(&mut map);
         let mut spawn_point = nalgebra_glm::vec3((MAP_SIZE / 2) as f32, (MAP_SIZE / 2) as f32, 1.0);
@@ -434,18 +352,20 @@ impl Island {
         }
 
         let font_mgr = FontMgr::new();
-        let font = font_mgr
-            .load_font("res/HelveticaNeue Medium.ttf", 16)
-            .unwrap();
-        let text = Text::new("i hate this shit", font, Color::RGBA(255, 0, 0, 255));
+        let mut font = font_mgr.load_font("res/SourceCodePro.ttf", 12).unwrap();
+        font.set_style(sdl2::ttf::FontStyle::BOLD);
+
+        let text = Text::new("X", font, Color::RGBA(0, 0, 0, 255));
 
         let (i, v, n, u, c) = create_mesh(&map);
         let grass = Mesh::new(i, vec![v, n, u, c], Texture::from_png("res/grass.png"));
-        let water = Mesh::from_obj(
+        let mut water = Mesh::from_obj(
             QUAD_DATA,
             nalgebra_glm::vec3(1.0, 1.0, 1.0),
             Texture::from_png("res/water.png"),
         );
+        water.scale.x = 1000.0;
+        water.scale.y = 1000.0;
         let tree = Mesh::from_obj(
             CONE_DATA,
             nalgebra_glm::vec3(0.2, 0.25, 0.0),
@@ -453,12 +373,16 @@ impl Island {
         );
 
         let program = create_program(include_str!("../.vert"), include_str!("../.frag")).unwrap();
-        program.set();
-        let camera = Camera::new(
+        let camera = PerspectiveCamera::new(
             spawn_point,
             nalgebra_glm::vec3(0.0, 0.0, 0.0),
             nalgebra_glm::vec3(0.0, 0.0, 1.0),
             0.9,
+        );
+        let ui_camera = OrthoCamera::new(
+            nalgebra_glm::vec3(0.0, 0.0, 1.0),
+            nalgebra_glm::vec3(0.0, 0.0, 0.0),
+            nalgebra_glm::vec3(0.0, 1.0, 0.0),
         );
 
         let mut tree_pos = vec![];
@@ -477,7 +401,6 @@ impl Island {
         }
 
         Self {
-            world,
             tiles: map,
             text,
             grass_tile: grass,
@@ -486,6 +409,7 @@ impl Island {
             trees: tree_pos,
             program,
             camera,
+            ui_camera,
             vel_z: 0.0,
             feet_on_ground: false,
             facing: 0.0,

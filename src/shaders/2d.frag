@@ -1,10 +1,10 @@
 #version 330 core
 
+uniform sampler2D texture0;
+
 in vec3 texCoord;
 
 out vec4 Color;
-
-uniform sampler2D texture0;
 
 void main()
 {

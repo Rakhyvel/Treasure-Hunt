@@ -10,7 +10,8 @@ use scenes::island::Island;
 // x Island generation
 // x Camera movement
 // x Trees
-// - Text
+// x Text
+// - specs
 // - Maps & Treasure
 // - Enemy mobs
 // - Health bar, weapons

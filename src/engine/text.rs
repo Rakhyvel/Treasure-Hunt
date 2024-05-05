@@ -2,16 +2,15 @@ use std::path::Path;
 
 use sdl2::{
     pixels::Color,
-    rect::Rect,
-    surface::Surface,
     ttf::{Font, Sdl2TtfContext},
 };
 
 use crate::App;
 
 use super::{
+    camera::OrthoCamera,
     mesh::Mesh,
-    objects::{create_program, Program, Texture, Uniform},
+    objects::{create_program, Program, Texture},
 };
 
 pub struct FontMgr {
@@ -34,19 +33,22 @@ impl FontMgr {
 pub const QUAD_DATA: &[u8] = include_bytes!("../../res/quad.obj");
 pub struct Text {
     mesh: Mesh,
+    width: i32,
+    height: i32,
     program: Program,
 }
 
 impl Text {
     pub fn new(text: &'static str, font: Font, color: Color) -> Self {
-        let mut surface = font.render(text).blended(color).unwrap();
-        surface = surface
+        let surface = font
+            .render(text)
+            .blended(color)
+            .unwrap()
             .convert_format(sdl2::pixels::PixelFormatEnum::RGBA32)
             .unwrap();
-        let red_rect = Rect::new(100, 100, 200, 150);
-        surface
-            .fill_rect(Some(red_rect), Color::RGB(255, 255, 255))
-            .unwrap();
+
+        let width = surface.width();
+        let height = surface.height();
 
         let texture = Texture::from_surface(surface);
         let mesh = Mesh::from_obj(QUAD_DATA, nalgebra_glm::vec3(1.0, 1.0, 1.0), texture);
@@ -55,35 +57,20 @@ impl Text {
             include_str!("../shaders/2d.frag"),
         )
         .unwrap();
-        Self { mesh, program }
+        Self {
+            mesh,
+            width: width as i32,
+            height: height as i32,
+            program,
+        }
     }
 
-    pub fn draw(&self, app: &App) {
-        self.program.set();
-        let u_resolution = Uniform::new(self.program.id(), "u_resolution").unwrap();
-        let u_model_matrix = Uniform::new(self.program.id(), "u_model_matrix").unwrap();
-        let mut model_matrix = nalgebra_glm::one();
-        model_matrix = nalgebra_glm::translate(&model_matrix, &nalgebra_glm::vec3(0.0, 0.0, 0.0));
-        model_matrix = nalgebra_glm::scale(&model_matrix, &nalgebra_glm::vec3(1.0, 1.0, 1.0));
-        unsafe {
-            gl::Uniform2f(
-                u_resolution.id,
-                app.screen_width as f32,
-                app.screen_height as f32,
-            );
-            gl::UniformMatrix4fv(
-                u_model_matrix.id,
-                1,
-                gl::FALSE,
-                &model_matrix.columns(0, 4)[0],
-            );
-            self.mesh.set(self.program.id());
-            gl::DrawElements(
-                gl::TRIANGLES,
-                self.mesh.indices_len(),
-                gl::UNSIGNED_INT,
-                0 as *const _,
-            );
-        }
+    pub fn draw(&mut self, app: &App, camera: &OrthoCamera) {
+        self.mesh.scale = nalgebra_glm::vec3(
+            (self.width as f32) / (app.screen_width as f32),
+            (self.height as f32) / (app.screen_height as f32),
+            1.0,
+        );
+        self.mesh.draw(&self.program, camera);
     }
 }

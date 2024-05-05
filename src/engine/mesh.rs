@@ -1,7 +1,6 @@
-use super::objects::*;
+use super::{camera::Camera, objects::*};
 
 use std::ffi::CString;
-use std::path::Path;
 
 use obj::{load_obj, Obj, TexturedVertex};
 
@@ -16,6 +15,10 @@ pub struct Mesh {
     pub inputs: Vec<Input>,
     indices: Vec<u16>,
     texture: Texture,
+
+    pub position: nalgebra_glm::Vec3,
+    pub scale: nalgebra_glm::Vec3,
+    // TODO: Rotation
 }
 
 impl Mesh {
@@ -38,6 +41,8 @@ impl Mesh {
             inputs,
             texture,
             indices,
+            position: nalgebra_glm::vec3(0.0, 0.0, 0.0),
+            scale: nalgebra_glm::vec3(1.0, 1.0, 1.0),
         }
     }
 
@@ -61,7 +66,59 @@ impl Mesh {
         Self::new(indices, data, texture)
     }
 
-    pub fn set(&self, program: u32) {
+    pub fn set_3d(program: &Program, sun_dir: nalgebra_glm::Vec3, resolution: nalgebra_glm::Vec2) {
+        program.set();
+        let u_resolution = Uniform::new(program.id(), "u_resolution").unwrap();
+        let u_sun_dir = Uniform::new(program.id(), "u_sun_dir").unwrap();
+        unsafe {
+            gl::Uniform2f(u_resolution.id, resolution.x, resolution.y);
+            gl::Uniform3f(u_sun_dir.id, sun_dir.x, sun_dir.y, sun_dir.z);
+        }
+    }
+
+    pub fn draw(&self, program: &Program, camera: &dyn Camera) {
+        program.set();
+        let u_model_matrix = Uniform::new(program.id(), "u_model_matrix").unwrap();
+        let u_view_matrix = Uniform::new(program.id(), "u_view_matrix").unwrap();
+        let u_proj_matrix = Uniform::new(program.id(), "u_proj_matrix").unwrap();
+        let mut model_matrix = nalgebra_glm::one();
+        model_matrix = nalgebra_glm::translate(&model_matrix, &self.position);
+        model_matrix = nalgebra_glm::scale(&model_matrix, &self.scale);
+        let (view_matrix, proj_matrix) = camera.gen_view_proj_matrices();
+        unsafe {
+            gl::UniformMatrix4fv(
+                u_model_matrix.id,
+                1,
+                gl::FALSE,
+                &model_matrix.columns(0, 4)[0],
+            );
+            gl::UniformMatrix4fv(
+                u_view_matrix.id,
+                1,
+                gl::FALSE,
+                &view_matrix.columns(0, 4)[0],
+            );
+            gl::UniformMatrix4fv(
+                u_proj_matrix.id,
+                1,
+                gl::FALSE,
+                &proj_matrix.columns(0, 4)[0],
+            );
+            self.set(program.id());
+            gl::DrawElements(
+                gl::TRIANGLES,
+                self.indices_len(),
+                gl::UNSIGNED_INT,
+                0 as *const _,
+            );
+        }
+    }
+
+    fn indices_len(&self) -> i32 {
+        self.indices.len() as i32
+    }
+
+    fn set(&self, program: u32) {
         self.texture.activate(gl::TEXTURE0);
         let uniform = CString::new("texture0").unwrap();
         unsafe { gl::Uniform1i(gl::GetUniformLocation(program, uniform.as_ptr()), 0) };
@@ -71,10 +128,6 @@ impl Mesh {
             self.inputs[i].vao.enable(i as u32);
             self.inputs[i].ibo.set(&vec_u32_from_vec_u16(&self.indices));
         }
-    }
-
-    pub fn indices_len(&self) -> i32 {
-        self.indices.len() as i32
     }
 }
 

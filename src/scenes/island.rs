@@ -11,7 +11,7 @@ use specs::{prelude::*, Component, Join, ReadStorage};
 use crate::{
     engine::{
         camera::{Camera, ProjectionKind},
-        mesh::{Mesh, MeshMgr},
+        mesh::{self, Mesh, MeshMgr},
         objects::{create_program, Program, Texture},
         perlin::*,
         text::{FontMgr, Text},
@@ -69,8 +69,6 @@ pub struct Island {
     tiles: Vec<f32>,
 
     // text: Text,
-
-    // trees: Vec<nalgebra_glm::Vec3>,
     program: Arc<Mutex<Program>>,
     camera: Arc<Mutex<Camera>>,
     // ui_camera: Arc<Mutex<Camera>>,
@@ -441,7 +439,13 @@ impl Island {
             nalgebra_glm::vec3(1.0, 1.0, 1.0),
             Texture::from_png("res/water.png"),
         ));
+        let tree_mesh = mesh_mgr.add_mesh(Mesh::from_obj(
+            CONE_DATA,
+            nalgebra_glm::vec3(0.2, 0.25, 0.0),
+            Texture::from_png("res/grass.png"),
+        ));
 
+        world.insert(MeshMgrResource { data: mesh_mgr });
         world
             .create_entity()
             .with(Renderable {
@@ -463,9 +467,6 @@ impl Island {
             })
             .build();
 
-        world.insert(MeshMgrResource { data: mesh_mgr });
-
-        let mut tree_pos = vec![];
         for _ in 0..MAP_SIZE {
             loop {
                 let (x, y) = (
@@ -474,7 +475,16 @@ impl Island {
                 );
                 let height = get_z_scaled_interpolated(&map, x, y);
                 if height >= SCALE {
-                    tree_pos.push(nalgebra_glm::vec3(x, y, height));
+                    world
+                        .create_entity()
+                        .with(Renderable {
+                            mesh_id: tree_mesh,
+                            position: nalgebra_glm::vec3(x, y, height),
+                            scale: nalgebra_glm::vec3(1.0, 1.0, 1.0),
+                            program: Arc::clone(&program),
+                            camera: Arc::clone(&camera),
+                        })
+                        .build();
                     break;
                 }
             }

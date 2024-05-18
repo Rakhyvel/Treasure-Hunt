@@ -8,7 +8,7 @@ use sdl2::{
 use crate::App;
 
 use super::{
-    camera::OrthoCamera,
+    camera::Camera,
     mesh::Mesh,
     objects::{create_program, Program, Texture},
 };
@@ -65,12 +65,16 @@ impl Text {
         }
     }
 
-    pub fn draw(&mut self, app: &App, camera: &OrthoCamera) {
-        self.mesh.scale = nalgebra_glm::vec3(
-            (self.width as f32) / (app.screen_width as f32),
-            (self.height as f32) / (app.screen_height as f32),
-            1.0,
+    pub fn draw(&mut self, app: &App, camera: &Camera) {
+        self.mesh.draw(
+            &self.program,
+            camera,
+            nalgebra_glm::vec3(0.0, 0.0, 0.0),
+            nalgebra_glm::vec3(
+                (self.width as f32) / (app.screen_width as f32),
+                (self.height as f32) / (app.screen_height as f32),
+                1.0,
+            ),
         );
-        self.mesh.draw(&self.program, camera);
     }
 }

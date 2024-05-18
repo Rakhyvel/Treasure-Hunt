@@ -11,7 +11,7 @@ use scenes::island::Island;
 // x Camera movement
 // x Trees
 // x Text
-// - specs
+// - ecs
 // - Maps & Treasure
 // - Enemy mobs
 // - Health bar, weapons

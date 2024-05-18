@@ -13,3 +13,5 @@ obj-rs = "*"
 colors-transform = "*"
 rand = "0.8.4"
 image = "0.25.1"
+specs = {version = "0.16.0", features = ["specs-derive"]}
+specs-derive = "0.4.1"

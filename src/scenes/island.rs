@@ -1,13 +1,17 @@
-use std::f32::consts::PI;
+use std::{
+    f32::consts::PI,
+    sync::{Arc, Mutex},
+};
 
 use nalgebra_glm::pi;
 use rand::Rng;
-use sdl2::{keyboard::Scancode, pixels::Color};
+use sdl2::{keyboard::Scancode, pixels::Color, render};
+use specs::{prelude::*, Component, Join, ReadStorage};
 
 use crate::{
     engine::{
-        camera::{OrthoCamera, PerspectiveCamera},
-        mesh::Mesh,
+        camera::{Camera, ProjectionKind},
+        mesh::{Mesh, MeshMgr},
         objects::{create_program, Program, Texture},
         perlin::*,
         text::{FontMgr, Text},
@@ -23,19 +27,53 @@ const PERSON_HEIGHT: f32 = 1.6764 * UNIT_PER_METER;
 pub const QUAD_DATA: &[u8] = include_bytes!("../../res/quad.obj");
 pub const CONE_DATA: &[u8] = include_bytes!("../../res/cone.obj");
 
+#[derive(Component)]
+struct Renderable {
+    mesh_id: usize,
+    position: nalgebra_glm::Vec3,
+    scale: nalgebra_glm::Vec3,
+    program: Arc<Mutex<Program>>, // TODO: These should probably be resources, too, maybe
+    camera: Arc<Mutex<Camera>>,   // TODO: These should probably be resources, too, maybe
+}
+
+#[derive(Default)]
+struct MeshMgrResource {
+    pub data: MeshMgr,
+}
+
+struct RenderSystem;
+
+impl<'a> System<'a> for RenderSystem {
+    type SystemData = (ReadStorage<'a, Renderable>, Read<'a, MeshMgrResource>);
+
+    fn run(&mut self, (render_comps, mesh_mgr): Self::SystemData) {
+        for renderable in render_comps.join() {
+            let program_guard = renderable.program.as_ref().try_lock().unwrap();
+            let camera_guard = renderable.camera.as_ref().try_lock().unwrap();
+            let mesh = mesh_mgr.data.get_mesh(renderable.mesh_id);
+            mesh.draw(
+                &program_guard,
+                &camera_guard,
+                renderable.position,
+                renderable.scale,
+            );
+            drop(camera_guard);
+            drop(program_guard);
+        }
+    }
+}
+
 pub struct Island {
+    world: World,
+
     tiles: Vec<f32>,
 
-    text: Text,
+    // text: Text,
 
-    grass_tile: Mesh,
-    water_tiles: Mesh,
-    tree_mesh: Mesh,
-
-    trees: Vec<nalgebra_glm::Vec3>,
-    program: Program,
-    camera: PerspectiveCamera,
-    ui_camera: OrthoCamera,
+    // trees: Vec<nalgebra_glm::Vec3>,
+    program: Arc<Mutex<Program>>,
+    camera: Arc<Mutex<Camera>>,
+    // ui_camera: Arc<Mutex<Camera>>,
     vel_z: f32,
     feet_on_ground: bool,
     facing: f32,
@@ -282,12 +320,17 @@ impl Scene for Island {
 
         self.control(app);
 
+        let mut camera_guard = self.camera.as_ref().lock().unwrap();
+
         self.vel_z -= 1.3 * UNIT_PER_METER / 62.5;
-        self.camera.position.z += self.vel_z;
-        let feet_height =
-            get_z_scaled_interpolated(&self.tiles, self.camera.position.x, self.camera.position.y);
-        if self.camera.position.z - PERSON_HEIGHT <= feet_height {
-            self.camera.position.z = feet_height + PERSON_HEIGHT;
+        camera_guard.position.z += self.vel_z;
+        let feet_height = get_z_scaled_interpolated(
+            &self.tiles,
+            camera_guard.position.x,
+            camera_guard.position.y,
+        );
+        if camera_guard.position.z - PERSON_HEIGHT <= feet_height {
+            camera_guard.position.z = feet_height + PERSON_HEIGHT;
             self.feet_on_ground = true;
             self.vel_z = 0.0;
         } else {
@@ -299,7 +342,9 @@ impl Scene for Island {
             self.pitch,
         );
         let facing_vec = (rot_matrix * nalgebra_glm::vec4(1.0, 0.0, 0.0, 0.0)).xyz();
-        self.camera.lookat = self.camera.position + facing_vec;
+        camera_guard.lookat = camera_guard.position + facing_vec;
+
+        drop(camera_guard);
     }
 
     fn render(&mut self, app: &App) {
@@ -317,24 +362,26 @@ impl Scene for Island {
             gl::ClearColor(result.x / 255., result.y / 255., result.z / 255., 1.0);
         }
 
+        let program_guard = self.program.as_ref().lock().unwrap();
         Mesh::set_3d(
-            &self.program,
+            &program_guard,
             nalgebra_glm::vec3(0.0, (self.t * 0.001).sin(), (self.t * 0.001).cos()),
             nalgebra_glm::vec2(app.screen_width as f32, app.screen_height as f32),
         );
+        drop(program_guard);
 
-        self.grass_tile.draw(&self.program, &self.camera);
-        self.water_tiles.draw(&self.program, &self.camera);
-        for tree in &self.trees {
-            self.tree_mesh.position = *tree;
-            self.tree_mesh.draw(&self.program, &self.camera);
-        }
-        self.text.draw(app, &self.ui_camera);
+        let mut dispatcher = DispatcherBuilder::new()
+            .with(RenderSystem, "movement_system", &[])
+            .build();
+        dispatcher.dispatch_seq(&mut self.world);
     }
 }
 
 impl Island {
     pub fn new() -> Self {
+        let mut world = World::new();
+        world.register::<Renderable>();
+
         let mut rng = rand::thread_rng();
         let mut map = generate(MAP_SIZE, 0.1, rng.gen());
         create_bulge(&mut map);
@@ -351,39 +398,72 @@ impl Island {
             }
         }
 
-        let font_mgr = FontMgr::new();
-        let mut font = font_mgr.load_font("res/SourceCodePro.ttf", 12).unwrap();
-        font.set_style(sdl2::ttf::FontStyle::BOLD);
+        // TODO: Add text back!
+        // let font_mgr = FontMgr::new();
+        // let font = font_mgr
+        //     .load_font("res/HelveticaNeue Medium.ttf", 24)
+        //     .unwrap();
+        // let text = Text::new("+", font, Color::RGBA(255, 255, 255, 255));
 
-        let text = Text::new("X", font, Color::RGBA(0, 0, 0, 255));
+        // TODO: Add trees!
+        // let tree = Mesh::from_obj(
+        //     CONE_DATA,
+        //     nalgebra_glm::vec3(0.2, 0.25, 0.0),
+        //     Texture::from_png("res/grass.png"),
+        // );
 
-        let (i, v, n, u, c) = create_mesh(&map);
-        let grass = Mesh::new(i, vec![v, n, u, c], Texture::from_png("res/grass.png"));
-        let mut water = Mesh::from_obj(
-            QUAD_DATA,
-            nalgebra_glm::vec3(1.0, 1.0, 1.0),
-            Texture::from_png("res/water.png"),
-        );
-        water.scale.x = 1000.0;
-        water.scale.y = 1000.0;
-        let tree = Mesh::from_obj(
-            CONE_DATA,
-            nalgebra_glm::vec3(0.2, 0.25, 0.0),
-            Texture::from_png("res/grass.png"),
-        );
-
-        let program = create_program(include_str!("../.vert"), include_str!("../.frag")).unwrap();
-        let camera = PerspectiveCamera::new(
+        let program = Arc::new(Mutex::new(
+            create_program(include_str!("../.vert"), include_str!("../.frag")).unwrap(),
+        ));
+        let camera = Arc::new(Mutex::new(Camera::new(
             spawn_point,
             nalgebra_glm::vec3(0.0, 0.0, 0.0),
             nalgebra_glm::vec3(0.0, 0.0, 1.0),
-            0.9,
-        );
-        let ui_camera = OrthoCamera::new(
-            nalgebra_glm::vec3(0.0, 0.0, 1.0),
-            nalgebra_glm::vec3(0.0, 0.0, 0.0),
-            nalgebra_glm::vec3(0.0, 1.0, 0.0),
-        );
+            ProjectionKind::Perspective { fov: 0.9 },
+        )));
+        // TODO: Add text back!
+        // let ui_camera = Arc::new(Mutex::new(Camera::new(
+        //     nalgebra_glm::vec3(0.0, 0.0, 1.0),
+        //     nalgebra_glm::vec3(0.0, 0.0, 0.0),
+        //     nalgebra_glm::vec3(0.0, 1.0, 0.0),
+        //     ProjectionKind::Orthographic,
+        // )));
+
+        let (i, v, n, u, c) = create_mesh(&map);
+        let mut mesh_mgr = MeshMgr::new();
+        let grass_mesh = mesh_mgr.add_mesh(Mesh::new(
+            i,
+            vec![v, n, u, c],
+            Texture::from_png("res/grass.png"),
+        ));
+        let water_mesh = mesh_mgr.add_mesh(Mesh::from_obj(
+            QUAD_DATA,
+            nalgebra_glm::vec3(1.0, 1.0, 1.0),
+            Texture::from_png("res/water.png"),
+        ));
+
+        world
+            .create_entity()
+            .with(Renderable {
+                mesh_id: grass_mesh,
+                position: nalgebra_glm::vec3(0.0, 0.0, 0.0),
+                scale: nalgebra_glm::vec3(1.0, 1.0, 1.0),
+                program: Arc::clone(&program),
+                camera: Arc::clone(&camera),
+            })
+            .build();
+        world
+            .create_entity()
+            .with(Renderable {
+                mesh_id: water_mesh,
+                position: nalgebra_glm::vec3(0.0, 0.0, SCALE * 0.5),
+                scale: nalgebra_glm::vec3(1000.0, 1000.0, 1000.0),
+                program: Arc::clone(&program),
+                camera: Arc::clone(&camera),
+            })
+            .build();
+
+        world.insert(MeshMgrResource { data: mesh_mgr });
 
         let mut tree_pos = vec![];
         for _ in 0..MAP_SIZE {
@@ -401,15 +481,13 @@ impl Island {
         }
 
         Self {
+            world,
             tiles: map,
-            text,
-            grass_tile: grass,
-            water_tiles: water,
-            tree_mesh: tree,
-            trees: tree_pos,
+            // text,
+            // trees: tree_pos,
             program,
             camera,
-            ui_camera,
+            // ui_camera,
             vel_z: 0.0,
             feet_on_ground: false,
             facing: 0.0,
@@ -419,6 +497,8 @@ impl Island {
     }
 
     fn control(&mut self, app: &App) {
+        let mut camera_gaurd = self.camera.as_ref().lock().unwrap();
+
         let curr_w_state = app.keys[Scancode::W as usize];
         let curr_s_state = app.keys[Scancode::S as usize];
         let curr_a_state = app.keys[Scancode::A as usize];
@@ -429,35 +509,38 @@ impl Island {
             10.0 * UNIT_PER_METER / 62.5 * if curr_shift_state { 2.0 } else { 1.0 };
         let view_speed: f32 = 0.000005 * (app.screen_width as f32);
         let facing_vec = nalgebra_glm::vec3(self.facing.cos(), self.facing.sin(), 0.0);
-        let sideways_vec = nalgebra_glm::cross(&self.camera.up, &facing_vec);
-        let curr_height =
-            get_z_scaled_interpolated(&self.tiles, self.camera.position.x, self.camera.position.y);
+        let sideways_vec = nalgebra_glm::cross(&camera_gaurd.up, &facing_vec);
+        let curr_height = get_z_scaled_interpolated(
+            &self.tiles,
+            camera_gaurd.position.x,
+            camera_gaurd.position.y,
+        );
         if curr_w_state {
-            let new_pos = self.camera.position + facing_vec * walk_speed;
+            let new_pos = camera_gaurd.position + facing_vec * walk_speed;
             let new_height = get_z_scaled_interpolated(&self.tiles, new_pos.x, new_pos.y);
             if !self.feet_on_ground || curr_height <= SCALE / 2.0 || new_height > SCALE / 2.0 {
-                self.camera.position = new_pos
+                camera_gaurd.position = new_pos
             }
         }
         if curr_s_state {
-            let new_pos = self.camera.position - facing_vec * walk_speed;
+            let new_pos = camera_gaurd.position - facing_vec * walk_speed;
             let new_height = get_z_scaled_interpolated(&self.tiles, new_pos.x, new_pos.y);
             if !self.feet_on_ground || curr_height <= SCALE / 2.0 || new_height > SCALE / 2.0 {
-                self.camera.position = new_pos
+                camera_gaurd.position = new_pos
             }
         }
         if curr_a_state {
-            let new_pos = self.camera.position + sideways_vec * walk_speed;
+            let new_pos = camera_gaurd.position + sideways_vec * walk_speed;
             let new_height = get_z_scaled_interpolated(&self.tiles, new_pos.x, new_pos.y);
             if !self.feet_on_ground || curr_height <= SCALE / 2.0 || new_height > SCALE / 2.0 {
-                self.camera.position = new_pos
+                camera_gaurd.position = new_pos
             }
         }
         if curr_d_state {
-            let new_pos = self.camera.position - sideways_vec * walk_speed;
+            let new_pos = camera_gaurd.position - sideways_vec * walk_speed;
             let new_height = get_z_scaled_interpolated(&self.tiles, new_pos.x, new_pos.y);
             if !self.feet_on_ground || curr_height <= SCALE / 2.0 || new_height > SCALE / 2.0 {
-                self.camera.position = new_pos
+                camera_gaurd.position = new_pos
             }
         }
         if self.feet_on_ground {
@@ -469,5 +552,7 @@ impl Island {
         self.pitch = (self.pitch + view_speed * (app.mouse_rel_y as f32))
             .max(view_speed - PI / 2.0)
             .min(PI / 2.0 - view_speed);
+
+        drop(camera_gaurd);
     }
 }

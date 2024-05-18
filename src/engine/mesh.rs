@@ -76,14 +76,20 @@ impl Mesh {
         }
     }
 
-    pub fn draw(&self, program: &Program, camera: &dyn Camera) {
+    pub fn draw(
+        &self,
+        program: &Program,
+        camera: &Camera,
+        position: nalgebra_glm::Vec3,
+        scale: nalgebra_glm::Vec3,
+    ) {
         program.set();
         let u_model_matrix = Uniform::new(program.id(), "u_model_matrix").unwrap();
         let u_view_matrix = Uniform::new(program.id(), "u_view_matrix").unwrap();
         let u_proj_matrix = Uniform::new(program.id(), "u_proj_matrix").unwrap();
         let mut model_matrix = nalgebra_glm::one();
-        model_matrix = nalgebra_glm::translate(&model_matrix, &self.position);
-        model_matrix = nalgebra_glm::scale(&model_matrix, &self.scale);
+        model_matrix = nalgebra_glm::translate(&model_matrix, &position);
+        model_matrix = nalgebra_glm::scale(&model_matrix, &scale);
         let (view_matrix, proj_matrix) = camera.gen_view_proj_matrices();
         unsafe {
             gl::UniformMatrix4fv(
@@ -167,4 +173,25 @@ fn vec_u32_from_vec_u16(input: &Vec<u16>) -> Vec<u32> {
         retval.push(*x as u32);
     }
     retval
+}
+
+#[derive(Default)]
+pub struct MeshMgr {
+    meshes: Vec<Mesh>,
+}
+
+impl MeshMgr {
+    pub fn new() -> Self {
+        Self { meshes: vec![] }
+    }
+
+    pub fn add_mesh(&mut self, mesh: Mesh) -> usize {
+        let id = self.meshes.len();
+        self.meshes.push(mesh);
+        id
+    }
+
+    pub fn get_mesh(&self, id: usize) -> &Mesh {
+        self.meshes.get(id).unwrap()
+    }
 }

@@ -5,16 +5,16 @@ use std::{
 
 use nalgebra_glm::pi;
 use rand::Rng;
-use sdl2::{keyboard::Scancode, pixels::Color, render};
+use sdl2::{keyboard::Scancode, pixels::Color};
 use specs::{prelude::*, Component, Join, ReadStorage};
 
 use crate::{
     engine::{
         camera::{Camera, ProjectionKind},
-        mesh::{self, Mesh, MeshMgr},
+        mesh::{Mesh, MeshMgr, MeshMgrResource},
         objects::{create_program, Program, Texture},
         perlin::*,
-        text::{FontMgr, Text},
+        text::{initialize_gui, FontMgr, Text},
     },
     App, Scene,
 };
@@ -32,13 +32,9 @@ struct Renderable {
     mesh_id: usize,
     position: nalgebra_glm::Vec3,
     scale: nalgebra_glm::Vec3,
-    program: Arc<Mutex<Program>>, // TODO: These should probably be resources, too, maybe
-    camera: Arc<Mutex<Camera>>,   // TODO: These should probably be resources, too, maybe
-}
-
-#[derive(Default)]
-struct MeshMgrResource {
-    pub data: MeshMgr,
+    texture: Texture,
+    program: Arc<Mutex<Program>>,
+    camera: Arc<Mutex<Camera>>,
 }
 
 struct RenderSystem;
@@ -51,6 +47,10 @@ impl<'a> System<'a> for RenderSystem {
             let program_guard = renderable.program.as_ref().try_lock().unwrap();
             let camera_guard = renderable.camera.as_ref().try_lock().unwrap();
             let mesh = mesh_mgr.data.get_mesh(renderable.mesh_id);
+            program_guard.set();
+            renderable
+                .texture
+                .activate(gl::TEXTURE0, program_guard.id());
             mesh.draw(
                 &program_guard,
                 &camera_guard,
@@ -68,14 +68,14 @@ pub struct Island {
 
     tiles: Vec<f32>,
 
-    // text: Text,
     program: Arc<Mutex<Program>>,
     camera: Arc<Mutex<Camera>>,
-    // ui_camera: Arc<Mutex<Camera>>,
+    ui_camera: Arc<Mutex<Camera>>,
     vel_z: f32,
     feet_on_ground: bool,
     facing: f32,
     pitch: f32,
+    dispatcher: Dispatcher<'static, 'static>,
 
     t: f32,
 }
@@ -314,6 +314,8 @@ fn create_bulge(map: &mut Vec<f32>) {
 
 impl Scene for Island {
     fn update(&mut self, app: &App) {
+        self.world.insert((*app).clone());
+        // TODO: This should be bare, except for the tick dispatcher
         self.t += 1.0;
 
         self.control(app);
@@ -346,6 +348,7 @@ impl Scene for Island {
     }
 
     fn render(&mut self, app: &App) {
+        // TODO: This should be mostly bare, except for running the render dispatcher
         unsafe {
             let day_color = nalgebra_glm::vec3(172.0, 205.0, 248.0);
             let night_color = nalgebra_glm::vec3(5.0, 6.0, 7.0);
@@ -368,18 +371,23 @@ impl Scene for Island {
         );
         drop(program_guard);
 
-        let mut dispatcher = DispatcherBuilder::new()
-            .with(RenderSystem, "movement_system", &[])
-            .build();
-        dispatcher.dispatch_seq(&mut self.world);
+        self.dispatcher.dispatch_seq(&mut self.world);
     }
 }
 
 impl Island {
     pub fn new() -> Self {
+        // Setup ECS the world
         let mut world = World::new();
         world.register::<Renderable>();
+        world.insert(App::default());
 
+        // Setup the dispatcher(s)
+        let mut dispatcher_builder = DispatcherBuilder::new();
+        dispatcher_builder.add(RenderSystem, "movement_system", &[]);
+        initialize_gui(&mut world, &mut dispatcher_builder);
+
+        // Setup island map
         let mut rng = rand::thread_rng();
         let mut map = generate(MAP_SIZE, 0.1, rng.gen());
         create_bulge(&mut map);
@@ -396,62 +404,51 @@ impl Island {
             }
         }
 
-        // TODO: Add text back!
-        // let font_mgr = FontMgr::new();
-        // let font = font_mgr
-        //     .load_font("res/HelveticaNeue Medium.ttf", 24)
-        //     .unwrap();
-        // let text = Text::new("+", font, Color::RGBA(255, 255, 255, 255));
+        // TODO: I'd like a texture manager, maybe?
 
-        // TODO: Add trees!
-        // let tree = Mesh::from_obj(
-        //     CONE_DATA,
-        //     nalgebra_glm::vec3(0.2, 0.25, 0.0),
-        //     Texture::from_png("res/grass.png"),
-        // );
+        // Setup the font manager
+        let font_mgr = FontMgr::new();
+        let font = font_mgr
+            .load_font("res/HelveticaNeue Medium.ttf", 24)
+            .unwrap();
 
+        // Setup the mesh manager
+        let mut mesh_mgr = MeshMgr::new();
+        let (i, v, n, u, c) = create_mesh(&map);
+        let grass_mesh = mesh_mgr.add_mesh(Mesh::new(i, vec![v, n, u, c]));
+        let quad_mesh =
+            mesh_mgr.add_mesh(Mesh::from_obj(QUAD_DATA, nalgebra_glm::vec3(1.0, 1.0, 1.0)));
+        let tree_mesh = mesh_mgr.add_mesh(Mesh::from_obj(
+            CONE_DATA,
+            nalgebra_glm::vec3(0.2, 0.25, 0.0),
+        ));
+        world.insert(MeshMgrResource { data: mesh_mgr });
+
+        // Setup the program and cameras
         let program = Arc::new(Mutex::new(
             create_program(include_str!("../.vert"), include_str!("../.frag")).unwrap(),
         ));
         let camera = Arc::new(Mutex::new(Camera::new(
             spawn_point,
-            nalgebra_glm::vec3(0.0, 0.0, 0.0),
+            nalgebra_glm::vec3(MAP_SIZE as f32 / 2.0, MAP_SIZE as f32 / 2.0, SCALE / 2.0),
             nalgebra_glm::vec3(0.0, 0.0, 1.0),
             ProjectionKind::Perspective { fov: 0.9 },
         )));
-        // TODO: Add text back!
-        // let ui_camera = Arc::new(Mutex::new(Camera::new(
-        //     nalgebra_glm::vec3(0.0, 0.0, 1.0),
-        //     nalgebra_glm::vec3(0.0, 0.0, 0.0),
-        //     nalgebra_glm::vec3(0.0, 1.0, 0.0),
-        //     ProjectionKind::Orthographic,
-        // )));
+        let ui_camera = Arc::new(Mutex::new(Camera::new(
+            nalgebra_glm::vec3(0.0, 0.0, 1.0),
+            nalgebra_glm::vec3(0.0, 0.0, 0.0),
+            nalgebra_glm::vec3(0.0, 1.0, 0.0),
+            ProjectionKind::Orthographic,
+        )));
 
-        let (i, v, n, u, c) = create_mesh(&map);
-        let mut mesh_mgr = MeshMgr::new();
-        let grass_mesh = mesh_mgr.add_mesh(Mesh::new(
-            i,
-            vec![v, n, u, c],
-            Texture::from_png("res/grass.png"),
-        ));
-        let water_mesh = mesh_mgr.add_mesh(Mesh::from_obj(
-            QUAD_DATA,
-            nalgebra_glm::vec3(1.0, 1.0, 1.0),
-            Texture::from_png("res/water.png"),
-        ));
-        let tree_mesh = mesh_mgr.add_mesh(Mesh::from_obj(
-            CONE_DATA,
-            nalgebra_glm::vec3(0.2, 0.25, 0.0),
-            Texture::from_png("res/grass.png"),
-        ));
-
-        world.insert(MeshMgrResource { data: mesh_mgr });
+        // Add entities
         world
             .create_entity()
             .with(Renderable {
                 mesh_id: grass_mesh,
                 position: nalgebra_glm::vec3(0.0, 0.0, 0.0),
                 scale: nalgebra_glm::vec3(1.0, 1.0, 1.0),
+                texture: Texture::from_png("res/grass.png"),
                 program: Arc::clone(&program),
                 camera: Arc::clone(&camera),
             })
@@ -459,14 +456,24 @@ impl Island {
         world
             .create_entity()
             .with(Renderable {
-                mesh_id: water_mesh,
+                mesh_id: quad_mesh,
                 position: nalgebra_glm::vec3(0.0, 0.0, SCALE * 0.5),
                 scale: nalgebra_glm::vec3(1000.0, 1000.0, 1000.0),
+                texture: Texture::from_png("res/water.png"),
                 program: Arc::clone(&program),
                 camera: Arc::clone(&camera),
             })
             .build();
-
+        world
+            .create_entity()
+            .with(Text::new(
+                "+",
+                font,
+                Color::RGBA(255, 255, 255, 255),
+                Arc::clone(&ui_camera),
+                quad_mesh,
+            ))
+            .build();
         for _ in 0..MAP_SIZE {
             loop {
                 let (x, y) = (
@@ -481,6 +488,7 @@ impl Island {
                             mesh_id: tree_mesh,
                             position: nalgebra_glm::vec3(x, y, height),
                             scale: nalgebra_glm::vec3(1.0, 1.0, 1.0),
+                            texture: Texture::from_png("res/grass.png"),
                             program: Arc::clone(&program),
                             camera: Arc::clone(&camera),
                         })
@@ -493,16 +501,15 @@ impl Island {
         Self {
             world,
             tiles: map,
-            // text,
-            // trees: tree_pos,
             program,
             camera,
-            // ui_camera,
+            ui_camera,
             vel_z: 0.0,
             feet_on_ground: false,
-            facing: 0.0,
+            facing: PI,
             pitch: 0.0,
             t: 0.0,
+            dispatcher: dispatcher_builder.build(),
         }
     }
 

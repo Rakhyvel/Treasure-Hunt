@@ -1,7 +1,5 @@
 use super::{camera::Camera, objects::*};
 
-use std::ffi::CString;
-
 use obj::{load_obj, Obj, TexturedVertex};
 
 pub struct Input {
@@ -14,7 +12,6 @@ pub struct Input {
 pub struct Mesh {
     pub inputs: Vec<Input>,
     indices: Vec<u16>,
-    texture: Texture,
 
     pub position: nalgebra_glm::Vec3,
     pub scale: nalgebra_glm::Vec3,
@@ -22,7 +19,7 @@ pub struct Mesh {
 }
 
 impl Mesh {
-    pub fn new(indices: Vec<u16>, datas: Vec<Vec<f32>>, texture: Texture) -> Self {
+    pub fn new(indices: Vec<u16>, datas: Vec<Vec<f32>>) -> Self {
         let inputs: Vec<Input> = datas
             .iter()
             .map(|data| Input {
@@ -39,14 +36,13 @@ impl Mesh {
 
         Mesh {
             inputs,
-            texture,
             indices,
             position: nalgebra_glm::vec3(0.0, 0.0, 0.0),
             scale: nalgebra_glm::vec3(1.0, 1.0, 1.0),
         }
     }
 
-    pub fn from_obj(obj_file_data: &[u8], color: nalgebra_glm::Vec3, texture: Texture) -> Self {
+    pub fn from_obj(obj_file_data: &[u8], color: nalgebra_glm::Vec3) -> Self {
         let obj: Obj<TexturedVertex> = load_obj(&obj_file_data[..]).unwrap();
         let vb: Vec<TexturedVertex> = obj.vertices;
 
@@ -63,7 +59,7 @@ impl Mesh {
 
         let data = vec![vertices, normals, uv, colors];
 
-        Self::new(indices, data, texture)
+        Self::new(indices, data)
     }
 
     pub fn set_3d(program: &Program, sun_dir: nalgebra_glm::Vec3, resolution: nalgebra_glm::Vec2) {
@@ -83,7 +79,6 @@ impl Mesh {
         position: nalgebra_glm::Vec3,
         scale: nalgebra_glm::Vec3,
     ) {
-        program.set();
         let u_model_matrix = Uniform::new(program.id(), "u_model_matrix").unwrap();
         let u_view_matrix = Uniform::new(program.id(), "u_view_matrix").unwrap();
         let u_proj_matrix = Uniform::new(program.id(), "u_proj_matrix").unwrap();
@@ -110,7 +105,7 @@ impl Mesh {
                 gl::FALSE,
                 &proj_matrix.columns(0, 4)[0],
             );
-            self.set(program.id());
+            self.set();
             gl::DrawElements(
                 gl::TRIANGLES,
                 self.indices_len(),
@@ -124,11 +119,7 @@ impl Mesh {
         self.indices.len() as i32
     }
 
-    fn set(&self, program: u32) {
-        self.texture.activate(gl::TEXTURE0);
-        let uniform = CString::new("texture0").unwrap();
-        unsafe { gl::Uniform1i(gl::GetUniformLocation(program, uniform.as_ptr()), 0) };
-
+    fn set(&self) {
         for i in 0..self.inputs.len() {
             self.inputs[i].vbo.set(&self.inputs[i].data);
             self.inputs[i].vao.enable(i as u32);
@@ -194,4 +185,9 @@ impl MeshMgr {
     pub fn get_mesh(&self, id: usize) -> &Mesh {
         self.meshes.get(id).unwrap()
     }
+}
+
+#[derive(Default)]
+pub struct MeshMgrResource {
+    pub data: MeshMgr,
 }

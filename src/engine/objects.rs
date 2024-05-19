@@ -446,10 +446,12 @@ impl Texture {
         Ok(())
     }
 
-    pub fn activate(&self, unit: GLuint) {
+    pub fn activate(&self, unit: GLuint, program_id: u32) {
         unsafe {
             gl::ActiveTexture(unit);
+            let uniform = CString::new("texture0").unwrap();
             self.bind();
+            gl::Uniform1i(gl::GetUniformLocation(program_id, uniform.as_ptr()), 0)
         }
     }
 }

@@ -7,11 +7,12 @@ use sdl2::sys::{SDL_GetPerformanceCounter, SDL_GetPerformanceFrequency};
 use sdl2::video::SwapInterval;
 use sdl2::Sdl;
 
+#[derive(Clone)]
 pub struct App {
     // Screen stuff
     pub screen_width: i32,
     pub screen_height: i32,
-    pub sdl_context: Sdl,
+    // pub sdl_context: Sdl,
 
     // Main loop stuff
     pub running: bool,
@@ -26,9 +27,7 @@ pub struct App {
     pub mouse_left_down: bool,
     pub mouse_right_down: bool,
     pub mouse_wheel: f32,
-
     // Scene stack stuff
-    scene_stack: Vec<RefCell<Box<dyn Scene>>>,
 }
 
 pub fn run(
@@ -73,7 +72,7 @@ pub fn run(
     let mut app = App {
         screen_width,
         screen_height,
-        sdl_context,
+        // sdl_context,
         running: true,
         keys: [false; 256],
         mouse_x: 0,
@@ -84,11 +83,12 @@ pub fn run(
         mouse_right_down: false,
         mouse_wheel: 0.0,
         seconds: 0.0,
-        scene_stack: Vec::new(),
+        // scene_stack: Vec::new(),
     };
 
     let initial_scene = init(&app);
-    app.scene_stack.push(initial_scene);
+    let mut scene_stack: Vec<RefCell<Box<dyn Scene>>> = vec![];
+    scene_stack.push(initial_scene);
 
     let time = Instant::now();
     let mut start = time.elapsed().as_millis();
@@ -109,15 +109,15 @@ pub fn run(
         let scene_stale = false;
         while lag >= DELTA_T {
             app.reset_input();
-            app.poll_input();
-            app.sdl_context.mouse().warp_mouse_in_window(
+            app.poll_input(&sdl_context);
+            sdl_context.mouse().warp_mouse_in_window(
                 &window,
                 app.screen_width / 2,
                 app.screen_height / 2,
             );
-            app.sdl_context.mouse().set_relative_mouse_mode(true);
+            sdl_context.mouse().set_relative_mouse_mode(true);
 
-            if let Some(scene_ref) = app.scene_stack.last() {
+            if let Some(scene_ref) = scene_stack.last() {
                 scene_ref.borrow_mut().update(&app);
                 ticks += 1;
             }
@@ -135,7 +135,7 @@ pub fn run(
                 gl::Viewport(0, 0, app.screen_width, app.screen_height);
                 gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
             }
-            if let Some(scene_ref) = app.scene_stack.last() {
+            if let Some(scene_ref) = scene_stack.last() {
                 scene_ref.borrow_mut().render(&app);
             }
             window.gl_swap_window();
@@ -160,8 +160,8 @@ impl App {
         self.mouse_wheel = 0.0;
     }
 
-    fn poll_input(&mut self) {
-        let mut event_queue = self.sdl_context.event_pump().unwrap();
+    fn poll_input(&mut self, sdl_context: &Sdl) {
+        let mut event_queue = sdl_context.event_pump().unwrap();
         for event in event_queue.poll_iter() {
             match event {
                 Event::Quit { .. } => {
@@ -217,6 +217,26 @@ impl App {
 
                 _ => {}
             }
+        }
+    }
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self {
+            screen_width: Default::default(),
+            screen_height: Default::default(),
+            running: Default::default(),
+            seconds: Default::default(),
+            keys: [false; 256],
+            mouse_x: Default::default(),
+            mouse_y: Default::default(),
+            mouse_rel_x: Default::default(),
+            mouse_rel_y: Default::default(),
+            mouse_left_down: Default::default(),
+            mouse_right_down: Default::default(),
+            mouse_wheel: Default::default(),
+            // scene_stack: Default::default(),
         }
     }
 }

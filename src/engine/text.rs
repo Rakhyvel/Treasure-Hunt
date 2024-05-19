@@ -1,15 +1,20 @@
-use std::path::Path;
+use specs::prelude::*;
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use sdl2::{
     pixels::Color,
     ttf::{Font, Sdl2TtfContext},
 };
+use specs::{Component, DispatcherBuilder, VecStorage, World};
 
 use crate::App;
 
 use super::{
     camera::Camera,
-    mesh::Mesh,
+    mesh::MeshMgrResource,
     objects::{create_program, Program, Texture},
 };
 
@@ -30,16 +35,57 @@ impl FontMgr {
     }
 }
 
-pub const QUAD_DATA: &[u8] = include_bytes!("../../res/quad.obj");
+#[derive(Component)]
+#[storage(VecStorage)]
 pub struct Text {
-    mesh: Mesh,
+    mesh_id: usize,
+    position: nalgebra_glm::Vec3,
     width: i32,
     height: i32,
-    program: Program,
+    texture: Texture,
+    camera: Arc<Mutex<Camera>>,
+    program: Arc<Mutex<Program>>,
+}
+struct TextSystem;
+
+impl<'a> System<'a> for TextSystem {
+    type SystemData = (
+        ReadStorage<'a, Text>,
+        Read<'a, MeshMgrResource>,
+        Read<'a, App>,
+    );
+
+    fn run(&mut self, (text_components, mesh_mgr, app): Self::SystemData) {
+        for text in text_components.join() {
+            let program_guard = text.program.as_ref().try_lock().unwrap();
+            let camera_guard = text.camera.as_ref().try_lock().unwrap();
+            let mesh = mesh_mgr.data.get_mesh(text.mesh_id);
+            program_guard.set();
+            text.texture.activate(gl::TEXTURE0, program_guard.id());
+            mesh.draw(
+                &program_guard,
+                &camera_guard,
+                text.position,
+                nalgebra_glm::vec3(
+                    (text.width as f32) / (app.screen_width as f32),
+                    (text.height as f32) / (app.screen_height as f32),
+                    1.0,
+                ),
+            );
+            drop(camera_guard);
+            drop(program_guard);
+        }
+    }
 }
 
 impl Text {
-    pub fn new(text: &'static str, font: Font, color: Color) -> Self {
+    pub fn new(
+        text: &'static str,
+        font: Font,
+        color: Color,
+        camera: Arc<Mutex<Camera>>,
+        quad_mesh_id: usize,
+    ) -> Self {
         let surface = font
             .render(text)
             .blended(color)
@@ -51,30 +97,29 @@ impl Text {
         let height = surface.height();
 
         let texture = Texture::from_surface(surface);
-        let mesh = Mesh::from_obj(QUAD_DATA, nalgebra_glm::vec3(1.0, 1.0, 1.0), texture);
-        let program = create_program(
-            include_str!("../shaders/2d.vert"),
-            include_str!("../shaders/2d.frag"),
-        )
-        .unwrap();
+        let program = Arc::new(Mutex::new(
+            create_program(
+                include_str!("../shaders/2d.vert"),
+                include_str!("../shaders/2d.frag"),
+            )
+            .unwrap(),
+        ));
         Self {
-            mesh,
+            mesh_id: quad_mesh_id,
+            position: nalgebra_glm::vec3(0.0, 0.0, 0.0),
             width: width as i32,
             height: height as i32,
-            program,
+            texture,
+            camera,
+            program: Arc::clone(&program),
         }
     }
+}
 
-    pub fn draw(&mut self, app: &App, camera: &Camera) {
-        self.mesh.draw(
-            &self.program,
-            camera,
-            nalgebra_glm::vec3(0.0, 0.0, 0.0),
-            nalgebra_glm::vec3(
-                (self.width as f32) / (app.screen_width as f32),
-                (self.height as f32) / (app.screen_height as f32),
-                1.0,
-            ),
-        );
-    }
+pub fn initialize_gui(world: &mut World, dispatcher_builder: &mut DispatcherBuilder) {
+    // Register GUI components
+    world.register::<Text>();
+
+    // Add GUI systems to the dispatcher
+    dispatcher_builder.add(TextSystem, "text_system", &[]);
 }

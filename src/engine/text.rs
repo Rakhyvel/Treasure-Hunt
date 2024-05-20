@@ -117,6 +117,7 @@ impl Text {
 }
 
 pub fn initialize_gui(world: &mut World, dispatcher_builder: &mut DispatcherBuilder) {
+    // TODO: We will need an update and a render dispatch
     // Register GUI components
     world.register::<Text>();
 

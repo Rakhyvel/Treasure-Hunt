@@ -62,6 +62,7 @@ impl Drop for Shader {
     }
 }
 
+#[derive(Default)]
 pub struct Program {
     id: GLuint,
 }

@@ -27,57 +27,359 @@ const PERSON_HEIGHT: f32 = 1.6764 * UNIT_PER_METER;
 pub const QUAD_DATA: &[u8] = include_bytes!("../../res/quad.obj");
 pub const CONE_DATA: &[u8] = include_bytes!("../../res/cone.obj");
 
+/*
+ * RESOURCES
+ */
+#[derive(Default)]
+struct TickResource {
+    t: f32,
+}
+
+#[derive(Default)]
+struct OpenGlResource {
+    camera: Camera,
+    program: Program,
+}
+
+#[derive(Default)]
+struct TileResource {
+    tiles: Vec<f32>,
+}
+
+#[derive(Default)]
+struct PlayerResource {
+    vel_z: f32,
+    feet_on_ground: bool,
+    facing: f32,
+    pitch: f32,
+}
+
+/*
+ * COMPONENTS
+ */
 #[derive(Component)]
 struct Renderable {
     mesh_id: usize,
     position: nalgebra_glm::Vec3,
     scale: nalgebra_glm::Vec3,
     texture: Texture,
-    program: Arc<Mutex<Program>>,
-    camera: Arc<Mutex<Camera>>,
+}
+
+/*
+ * SYSTEMS
+ */
+struct SkySystem;
+impl<'a> System<'a> for SkySystem {
+    type SystemData = (
+        Read<'a, App>,
+        Read<'a, OpenGlResource>,
+        Read<'a, TickResource>,
+    );
+    fn run(&mut self, (app, open_gl, tick_res): Self::SystemData) {
+        unsafe {
+            let day_color = nalgebra_glm::vec3(172.0, 205.0, 248.0);
+            let night_color = nalgebra_glm::vec3(5.0, 6.0, 7.0);
+            let red_color = nalgebra_glm::vec3(124.0, 102.0, 86.0);
+            let do_color = if (tick_res.t * 0.001).cos() > 0.0 {
+                day_color
+            } else {
+                night_color
+            };
+            let dnf = (tick_res.t * 0.001).sin().powf(10.0);
+            let result = dnf * red_color + (1.0 - dnf) * do_color;
+            gl::ClearColor(result.x / 255., result.y / 255., result.z / 255., 1.0);
+        }
+
+        Mesh::set_3d(
+            &open_gl.program,
+            nalgebra_glm::vec3(0.0, (tick_res.t * 0.001).sin(), (tick_res.t * 0.001).cos()),
+            nalgebra_glm::vec2(app.screen_width as f32, app.screen_height as f32),
+        );
+    }
 }
 
 struct RenderSystem;
-
 impl<'a> System<'a> for RenderSystem {
-    type SystemData = (ReadStorage<'a, Renderable>, Read<'a, MeshMgrResource>);
+    type SystemData = (
+        ReadStorage<'a, Renderable>,
+        Read<'a, MeshMgrResource>,
+        Read<'a, OpenGlResource>,
+    );
 
-    fn run(&mut self, (render_comps, mesh_mgr): Self::SystemData) {
+    fn run(&mut self, (render_comps, mesh_mgr, open_gl): Self::SystemData) {
         for renderable in render_comps.join() {
-            let program_guard = renderable.program.as_ref().try_lock().unwrap();
-            let camera_guard = renderable.camera.as_ref().try_lock().unwrap();
             let mesh = mesh_mgr.data.get_mesh(renderable.mesh_id);
-            program_guard.set();
+            open_gl.program.set();
             renderable
                 .texture
-                .activate(gl::TEXTURE0, program_guard.id());
+                .activate(gl::TEXTURE0, open_gl.program.id());
             mesh.draw(
-                &program_guard,
-                &camera_guard,
+                &open_gl.program,
+                &open_gl.camera,
                 renderable.position,
                 renderable.scale,
             );
-            drop(camera_guard);
-            drop(program_guard);
         }
     }
 }
 
+struct PlayerSystem;
+impl<'a> System<'a> for PlayerSystem {
+    type SystemData = (
+        Write<'a, PlayerResource>,
+        Read<'a, App>,
+        Write<'a, OpenGlResource>,
+        Read<'a, TileResource>,
+    );
+
+    fn run(&mut self, (mut player, app, mut opengl, tile_res): Self::SystemData) {
+        // TODO: This is a lot. Can it be cleaned up somehow?
+        let curr_w_state = app.keys[Scancode::W as usize];
+        let curr_s_state = app.keys[Scancode::S as usize];
+        let curr_a_state = app.keys[Scancode::A as usize];
+        let curr_d_state = app.keys[Scancode::D as usize];
+        let curr_shift_state = app.keys[Scancode::LShift as usize];
+        let curr_space_state = app.keys[Scancode::Space as usize];
+        let walk_speed: f32 =
+            10.0 * UNIT_PER_METER / 62.5 * if curr_shift_state { 2.0 } else { 1.0 };
+        let view_speed: f32 = 0.000005 * (app.screen_width as f32);
+        let facing_vec = nalgebra_glm::vec3(player.facing.cos(), player.facing.sin(), 0.0);
+        let sideways_vec = nalgebra_glm::cross(&opengl.camera.up, &facing_vec);
+        let curr_height = get_z_scaled_interpolated(
+            &tile_res.tiles,
+            opengl.camera.position.x,
+            opengl.camera.position.y,
+        );
+        if curr_w_state {
+            let new_pos = opengl.camera.position + facing_vec * walk_speed;
+            let new_height = get_z_scaled_interpolated(&tile_res.tiles, new_pos.x, new_pos.y);
+            if !player.feet_on_ground || curr_height <= SCALE / 2.0 || new_height > SCALE / 2.0 {
+                opengl.camera.position = new_pos
+            }
+        }
+        if curr_s_state {
+            let new_pos = opengl.camera.position - facing_vec * walk_speed;
+            let new_height = get_z_scaled_interpolated(&tile_res.tiles, new_pos.x, new_pos.y);
+            if !player.feet_on_ground || curr_height <= SCALE / 2.0 || new_height > SCALE / 2.0 {
+                opengl.camera.position = new_pos
+            }
+        }
+        if curr_a_state {
+            let new_pos = opengl.camera.position + sideways_vec * walk_speed;
+            let new_height = get_z_scaled_interpolated(&tile_res.tiles, new_pos.x, new_pos.y);
+            if !player.feet_on_ground || curr_height <= SCALE / 2.0 || new_height > SCALE / 2.0 {
+                opengl.camera.position = new_pos
+            }
+        }
+        if curr_d_state {
+            let new_pos = opengl.camera.position - sideways_vec * walk_speed;
+            let new_height = get_z_scaled_interpolated(&tile_res.tiles, new_pos.x, new_pos.y);
+            if !player.feet_on_ground || curr_height <= SCALE / 2.0 || new_height > SCALE / 2.0 {
+                opengl.camera.position = new_pos
+            }
+        }
+        if player.feet_on_ground {
+            if curr_space_state {
+                player.vel_z += 0.5 * UNIT_PER_METER;
+            }
+        }
+        player.facing -= view_speed * app.mouse_rel_x as f32;
+        player.pitch = (player.pitch + view_speed * (app.mouse_rel_y as f32))
+            .max(view_speed - PI / 2.0)
+            .min(PI / 2.0 - view_speed);
+
+        player.vel_z -= 1.3 * UNIT_PER_METER / 62.5;
+        opengl.camera.position.z += player.vel_z;
+        let feet_height = get_z_scaled_interpolated(
+            &tile_res.tiles,
+            opengl.camera.position.x,
+            opengl.camera.position.y,
+        );
+        if opengl.camera.position.z - PERSON_HEIGHT <= feet_height {
+            opengl.camera.position.z = feet_height + PERSON_HEIGHT;
+            player.feet_on_ground = true;
+            player.vel_z = 0.0;
+        } else {
+            player.feet_on_ground = false;
+        }
+
+        let rot_matrix = nalgebra_glm::rotate_y(
+            &nalgebra_glm::rotate_z(&nalgebra_glm::one(), player.facing),
+            player.pitch,
+        );
+        let facing_vec = (rot_matrix * nalgebra_glm::vec4(1.0, 0.0, 0.0, 0.0)).xyz();
+        opengl.camera.lookat = opengl.camera.position + facing_vec;
+    }
+}
+
+struct TickSystem;
+impl<'a> System<'a> for TickSystem {
+    type SystemData = Write<'a, TickResource>;
+
+    fn run(&mut self, mut tick_res: Self::SystemData) {
+        tick_res.t += 1.0;
+    }
+}
+
+/*
+ * SCENE STUFF
+ */
+
 pub struct Island {
     world: World,
+    update_dispatcher: Dispatcher<'static, 'static>,
+    render_dispatcher: Dispatcher<'static, 'static>,
+    _ui_camera: Arc<Mutex<Camera>>, // TODO: Probably remove too
+}
+impl Scene for Island {
+    fn update(&mut self, app: &App) {
+        self.world.insert((*app).clone());
+        self.update_dispatcher.dispatch_seq(&mut self.world);
+    }
 
-    tiles: Vec<f32>,
+    fn render(&mut self, _app: &App) {
+        self.render_dispatcher.dispatch_seq(&mut self.world);
+    }
+}
 
-    program: Arc<Mutex<Program>>,
-    camera: Arc<Mutex<Camera>>,
-    ui_camera: Arc<Mutex<Camera>>,
-    vel_z: f32,
-    feet_on_ground: bool,
-    facing: f32,
-    pitch: f32,
-    dispatcher: Dispatcher<'static, 'static>,
+impl Island {
+    pub fn new() -> Self {
+        // Setup ECS the world
+        let mut world = World::new();
+        world.register::<Renderable>();
 
-    t: f32,
+        // Setup the dispatchers
+        let mut update_dispatcher_builder = DispatcherBuilder::new();
+        update_dispatcher_builder.add(PlayerSystem, "player system", &[]);
+        update_dispatcher_builder.add(TickSystem, "tick system", &[]);
+
+        let mut render_dispatcher_builder = DispatcherBuilder::new();
+        render_dispatcher_builder.add(SkySystem, "sky system", &[]);
+        render_dispatcher_builder.add(RenderSystem, "render system", &[]);
+        initialize_gui(&mut world, &mut render_dispatcher_builder);
+
+        // Setup island map
+        let mut rng = rand::thread_rng();
+        let mut map = generate(MAP_SIZE, 0.1, rng.gen());
+        create_bulge(&mut map);
+        let mut spawn_point = nalgebra_glm::vec3((MAP_SIZE / 2) as f32, (MAP_SIZE / 2) as f32, 1.0);
+        for x in (MAP_SIZE / 2)..MAP_SIZE {
+            let height = get_z_scaled_interpolated(&map, x as f32, MAP_SIZE as f32 / 2.0);
+            if height < SCALE / 2.0 {
+                spawn_point = nalgebra_glm::vec3(
+                    x as f32 - 1.0,
+                    MAP_SIZE as f32 / 2.0,
+                    height + PERSON_HEIGHT,
+                );
+                break;
+            }
+        }
+
+        // Setup the font manager
+        let font_mgr = FontMgr::new();
+        let font = font_mgr
+            .load_font("res/HelveticaNeue Medium.ttf", 24)
+            .unwrap();
+
+        // Setup the mesh manager
+        let mut mesh_mgr = MeshMgr::new();
+        let (i, v, n, u, c) = create_mesh(&map);
+        let grass_mesh = mesh_mgr.add_mesh(Mesh::new(i, vec![v, n, u, c]));
+        let quad_mesh =
+            mesh_mgr.add_mesh(Mesh::from_obj(QUAD_DATA, nalgebra_glm::vec3(1.0, 1.0, 1.0)));
+        let tree_mesh = mesh_mgr.add_mesh(Mesh::from_obj(
+            CONE_DATA,
+            nalgebra_glm::vec3(0.2, 0.25, 0.0),
+        ));
+        world.insert(MeshMgrResource { data: mesh_mgr });
+
+        // Setup the program and cameras
+        let ui_camera = Arc::new(Mutex::new(Camera::new(
+            nalgebra_glm::vec3(0.0, 0.0, 1.0),
+            nalgebra_glm::vec3(0.0, 0.0, 0.0),
+            nalgebra_glm::vec3(0.0, 1.0, 0.0),
+            ProjectionKind::Orthographic,
+        )));
+
+        // Add entities
+        world
+            .create_entity()
+            .with(Renderable {
+                mesh_id: grass_mesh,
+                position: nalgebra_glm::vec3(0.0, 0.0, 0.0),
+                scale: nalgebra_glm::vec3(1.0, 1.0, 1.0),
+                texture: Texture::from_png("res/grass.png"),
+            })
+            .build();
+        world
+            .create_entity()
+            .with(Renderable {
+                mesh_id: quad_mesh,
+                position: nalgebra_glm::vec3(0.0, 0.0, SCALE * 0.5),
+                scale: nalgebra_glm::vec3(1000.0, 1000.0, 1000.0),
+                texture: Texture::from_png("res/water.png"),
+            })
+            .build();
+        world
+            .create_entity()
+            .with(Text::new(
+                "+",
+                font,
+                Color::RGBA(255, 255, 255, 255),
+                Arc::clone(&ui_camera),
+                quad_mesh,
+            ))
+            .build();
+        for _ in 0..MAP_SIZE {
+            // Add all the trees
+            loop {
+                let (x, y) = (
+                    rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
+                    rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
+                );
+                let height = get_z_scaled_interpolated(&map, x, y);
+                if height >= SCALE {
+                    world
+                        .create_entity()
+                        .with(Renderable {
+                            mesh_id: tree_mesh,
+                            position: nalgebra_glm::vec3(x, y, height),
+                            scale: nalgebra_glm::vec3(1.0, 1.0, 1.0),
+                            texture: Texture::from_png("res/grass.png"),
+                        })
+                        .build();
+                    break;
+                }
+            }
+        }
+
+        // Add resources
+        world.insert(App::default());
+        world.insert(TickResource { t: 0.0 });
+        world.insert(OpenGlResource {
+            camera: Camera::new(
+                spawn_point,
+                nalgebra_glm::vec3(MAP_SIZE as f32 / 2.0, MAP_SIZE as f32 / 2.0, SCALE / 2.0),
+                nalgebra_glm::vec3(0.0, 0.0, 1.0),
+                ProjectionKind::Perspective { fov: 0.9 },
+            ),
+            program: create_program(include_str!("../.vert"), include_str!("../.frag")).unwrap(),
+        });
+        world.insert(PlayerResource {
+            vel_z: 0.0,
+            feet_on_ground: true,
+            facing: 3.14,
+            pitch: 0.0,
+        });
+        world.insert(TileResource { tiles: map });
+
+        Self {
+            world,
+            _ui_camera: ui_camera,
+            update_dispatcher: update_dispatcher_builder.build(),
+            render_dispatcher: render_dispatcher_builder.build(),
+        }
+    }
 }
 
 fn create_mesh(tiles: &Vec<f32>) -> (Vec<u16>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
@@ -309,267 +611,5 @@ fn create_bulge(map: &mut Vec<f32>) {
                 * (-((d / m).powf(2.0)) / (2.0 * s.powf(2.0))).exp();
             map[x + y * MAP_SIZE] = ((1.0 - t) * bulge + t * z).powf(1.0);
         }
-    }
-}
-
-impl Scene for Island {
-    fn update(&mut self, app: &App) {
-        self.world.insert((*app).clone());
-        // TODO: This should be bare, except for the tick dispatcher
-        self.t += 1.0;
-
-        self.control(app);
-
-        let mut camera_guard = self.camera.as_ref().lock().unwrap();
-
-        self.vel_z -= 1.3 * UNIT_PER_METER / 62.5;
-        camera_guard.position.z += self.vel_z;
-        let feet_height = get_z_scaled_interpolated(
-            &self.tiles,
-            camera_guard.position.x,
-            camera_guard.position.y,
-        );
-        if camera_guard.position.z - PERSON_HEIGHT <= feet_height {
-            camera_guard.position.z = feet_height + PERSON_HEIGHT;
-            self.feet_on_ground = true;
-            self.vel_z = 0.0;
-        } else {
-            self.feet_on_ground = false;
-        }
-
-        let rot_matrix = nalgebra_glm::rotate_y(
-            &nalgebra_glm::rotate_z(&nalgebra_glm::one(), self.facing),
-            self.pitch,
-        );
-        let facing_vec = (rot_matrix * nalgebra_glm::vec4(1.0, 0.0, 0.0, 0.0)).xyz();
-        camera_guard.lookat = camera_guard.position + facing_vec;
-
-        drop(camera_guard);
-    }
-
-    fn render(&mut self, app: &App) {
-        // TODO: This should be mostly bare, except for running the render dispatcher
-        unsafe {
-            let day_color = nalgebra_glm::vec3(172.0, 205.0, 248.0);
-            let night_color = nalgebra_glm::vec3(5.0, 6.0, 7.0);
-            let red_color = nalgebra_glm::vec3(124.0, 102.0, 86.0);
-            let do_color = if (self.t * 0.001).cos() > 0.0 {
-                day_color
-            } else {
-                night_color
-            };
-            let dnf = (self.t * 0.001).sin().powf(10.0);
-            let result = dnf * red_color + (1.0 - dnf) * do_color;
-            gl::ClearColor(result.x / 255., result.y / 255., result.z / 255., 1.0);
-        }
-
-        let program_guard = self.program.as_ref().lock().unwrap();
-        Mesh::set_3d(
-            &program_guard,
-            nalgebra_glm::vec3(0.0, (self.t * 0.001).sin(), (self.t * 0.001).cos()),
-            nalgebra_glm::vec2(app.screen_width as f32, app.screen_height as f32),
-        );
-        drop(program_guard);
-
-        self.dispatcher.dispatch_seq(&mut self.world);
-    }
-}
-
-impl Island {
-    pub fn new() -> Self {
-        // Setup ECS the world
-        let mut world = World::new();
-        world.register::<Renderable>();
-        world.insert(App::default());
-
-        // Setup the dispatcher(s)
-        let mut dispatcher_builder = DispatcherBuilder::new();
-        dispatcher_builder.add(RenderSystem, "movement_system", &[]);
-        initialize_gui(&mut world, &mut dispatcher_builder);
-
-        // Setup island map
-        let mut rng = rand::thread_rng();
-        let mut map = generate(MAP_SIZE, 0.1, rng.gen());
-        create_bulge(&mut map);
-        let mut spawn_point = nalgebra_glm::vec3((MAP_SIZE / 2) as f32, (MAP_SIZE / 2) as f32, 1.0);
-        for x in (MAP_SIZE / 2)..MAP_SIZE {
-            let height = get_z_scaled_interpolated(&map, x as f32, MAP_SIZE as f32 / 2.0);
-            if height < SCALE / 2.0 {
-                spawn_point = nalgebra_glm::vec3(
-                    x as f32 - 1.0,
-                    MAP_SIZE as f32 / 2.0,
-                    height + PERSON_HEIGHT,
-                );
-                break;
-            }
-        }
-
-        // TODO: I'd like a texture manager, maybe?
-
-        // Setup the font manager
-        let font_mgr = FontMgr::new();
-        let font = font_mgr
-            .load_font("res/HelveticaNeue Medium.ttf", 24)
-            .unwrap();
-
-        // Setup the mesh manager
-        let mut mesh_mgr = MeshMgr::new();
-        let (i, v, n, u, c) = create_mesh(&map);
-        let grass_mesh = mesh_mgr.add_mesh(Mesh::new(i, vec![v, n, u, c]));
-        let quad_mesh =
-            mesh_mgr.add_mesh(Mesh::from_obj(QUAD_DATA, nalgebra_glm::vec3(1.0, 1.0, 1.0)));
-        let tree_mesh = mesh_mgr.add_mesh(Mesh::from_obj(
-            CONE_DATA,
-            nalgebra_glm::vec3(0.2, 0.25, 0.0),
-        ));
-        world.insert(MeshMgrResource { data: mesh_mgr });
-
-        // Setup the program and cameras
-        let program = Arc::new(Mutex::new(
-            create_program(include_str!("../.vert"), include_str!("../.frag")).unwrap(),
-        ));
-        let camera = Arc::new(Mutex::new(Camera::new(
-            spawn_point,
-            nalgebra_glm::vec3(MAP_SIZE as f32 / 2.0, MAP_SIZE as f32 / 2.0, SCALE / 2.0),
-            nalgebra_glm::vec3(0.0, 0.0, 1.0),
-            ProjectionKind::Perspective { fov: 0.9 },
-        )));
-        let ui_camera = Arc::new(Mutex::new(Camera::new(
-            nalgebra_glm::vec3(0.0, 0.0, 1.0),
-            nalgebra_glm::vec3(0.0, 0.0, 0.0),
-            nalgebra_glm::vec3(0.0, 1.0, 0.0),
-            ProjectionKind::Orthographic,
-        )));
-
-        // Add entities
-        world
-            .create_entity()
-            .with(Renderable {
-                mesh_id: grass_mesh,
-                position: nalgebra_glm::vec3(0.0, 0.0, 0.0),
-                scale: nalgebra_glm::vec3(1.0, 1.0, 1.0),
-                texture: Texture::from_png("res/grass.png"),
-                program: Arc::clone(&program),
-                camera: Arc::clone(&camera),
-            })
-            .build();
-        world
-            .create_entity()
-            .with(Renderable {
-                mesh_id: quad_mesh,
-                position: nalgebra_glm::vec3(0.0, 0.0, SCALE * 0.5),
-                scale: nalgebra_glm::vec3(1000.0, 1000.0, 1000.0),
-                texture: Texture::from_png("res/water.png"),
-                program: Arc::clone(&program),
-                camera: Arc::clone(&camera),
-            })
-            .build();
-        world
-            .create_entity()
-            .with(Text::new(
-                "+",
-                font,
-                Color::RGBA(255, 255, 255, 255),
-                Arc::clone(&ui_camera),
-                quad_mesh,
-            ))
-            .build();
-        for _ in 0..MAP_SIZE {
-            loop {
-                let (x, y) = (
-                    rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
-                    rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
-                );
-                let height = get_z_scaled_interpolated(&map, x, y);
-                if height >= SCALE {
-                    world
-                        .create_entity()
-                        .with(Renderable {
-                            mesh_id: tree_mesh,
-                            position: nalgebra_glm::vec3(x, y, height),
-                            scale: nalgebra_glm::vec3(1.0, 1.0, 1.0),
-                            texture: Texture::from_png("res/grass.png"),
-                            program: Arc::clone(&program),
-                            camera: Arc::clone(&camera),
-                        })
-                        .build();
-                    break;
-                }
-            }
-        }
-
-        Self {
-            world,
-            tiles: map,
-            program,
-            camera,
-            ui_camera,
-            vel_z: 0.0,
-            feet_on_ground: false,
-            facing: PI,
-            pitch: 0.0,
-            t: 0.0,
-            dispatcher: dispatcher_builder.build(),
-        }
-    }
-
-    fn control(&mut self, app: &App) {
-        let mut camera_gaurd = self.camera.as_ref().lock().unwrap();
-
-        let curr_w_state = app.keys[Scancode::W as usize];
-        let curr_s_state = app.keys[Scancode::S as usize];
-        let curr_a_state = app.keys[Scancode::A as usize];
-        let curr_d_state = app.keys[Scancode::D as usize];
-        let curr_shift_state = app.keys[Scancode::LShift as usize];
-        let curr_space_state = app.keys[Scancode::Space as usize];
-        let walk_speed: f32 =
-            10.0 * UNIT_PER_METER / 62.5 * if curr_shift_state { 2.0 } else { 1.0 };
-        let view_speed: f32 = 0.000005 * (app.screen_width as f32);
-        let facing_vec = nalgebra_glm::vec3(self.facing.cos(), self.facing.sin(), 0.0);
-        let sideways_vec = nalgebra_glm::cross(&camera_gaurd.up, &facing_vec);
-        let curr_height = get_z_scaled_interpolated(
-            &self.tiles,
-            camera_gaurd.position.x,
-            camera_gaurd.position.y,
-        );
-        if curr_w_state {
-            let new_pos = camera_gaurd.position + facing_vec * walk_speed;
-            let new_height = get_z_scaled_interpolated(&self.tiles, new_pos.x, new_pos.y);
-            if !self.feet_on_ground || curr_height <= SCALE / 2.0 || new_height > SCALE / 2.0 {
-                camera_gaurd.position = new_pos
-            }
-        }
-        if curr_s_state {
-            let new_pos = camera_gaurd.position - facing_vec * walk_speed;
-            let new_height = get_z_scaled_interpolated(&self.tiles, new_pos.x, new_pos.y);
-            if !self.feet_on_ground || curr_height <= SCALE / 2.0 || new_height > SCALE / 2.0 {
-                camera_gaurd.position = new_pos
-            }
-        }
-        if curr_a_state {
-            let new_pos = camera_gaurd.position + sideways_vec * walk_speed;
-            let new_height = get_z_scaled_interpolated(&self.tiles, new_pos.x, new_pos.y);
-            if !self.feet_on_ground || curr_height <= SCALE / 2.0 || new_height > SCALE / 2.0 {
-                camera_gaurd.position = new_pos
-            }
-        }
-        if curr_d_state {
-            let new_pos = camera_gaurd.position - sideways_vec * walk_speed;
-            let new_height = get_z_scaled_interpolated(&self.tiles, new_pos.x, new_pos.y);
-            if !self.feet_on_ground || curr_height <= SCALE / 2.0 || new_height > SCALE / 2.0 {
-                camera_gaurd.position = new_pos
-            }
-        }
-        if self.feet_on_ground {
-            if curr_space_state {
-                self.vel_z += 0.5 * UNIT_PER_METER;
-            }
-        }
-        self.facing -= view_speed * app.mouse_rel_x as f32;
-        self.pitch = (self.pitch + view_speed * (app.mouse_rel_y as f32))
-            .max(view_speed - PI / 2.0)
-            .min(PI / 2.0 - view_speed);
-
-        drop(camera_gaurd);
     }
 }

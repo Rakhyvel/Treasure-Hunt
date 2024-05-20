@@ -3,6 +3,13 @@ pub enum ProjectionKind {
     Orthographic,
 }
 
+impl Default for ProjectionKind {
+    fn default() -> Self {
+        Self::Perspective { fov: 3.5 }
+    }
+}
+
+#[derive(Default)]
 pub struct Camera {
     pub position: nalgebra_glm::Vec3,
     pub lookat: nalgebra_glm::Vec3,

@@ -22,7 +22,7 @@ use crate::{
 const MAP_SIZE: usize = 500;
 const SCALE: f32 = 10.0;
 const UNIT_PER_METER: f32 = 0.2;
-const PERSON_HEIGHT: f32 = 50.6764 * UNIT_PER_METER;
+const PERSON_HEIGHT: f32 = 100.6764 * UNIT_PER_METER;
 
 pub const QUAD_DATA: &[u8] = include_bytes!("../../res/quad.obj");
 pub const CONE_DATA: &[u8] = include_bytes!("../../res/cone.obj");
@@ -78,7 +78,7 @@ impl<'a> System<'a> for SkySystem {
         Read<'a, TickResource>,
     );
     fn run(&mut self, (app, open_gl, tick_res): Self::SystemData) {
-        let model_t = tick_res.t * 0.00001 + 0.4;
+        let model_t = tick_res.t * 0.0001 + 0.4;
         unsafe {
             let day_color = nalgebra_glm::vec3(172.0, 205.0, 248.0);
             let night_color = nalgebra_glm::vec3(5.0, 6.0, 7.0);

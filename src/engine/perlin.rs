@@ -167,9 +167,115 @@ fn get_gradient(map: &mut Vec<f32>, map_size: usize, pos_x: f32, pos_y: f32) -> 
     // Calculate droplet's direction of flow with bilinear interpolation of height difference along the edges
     let gradient_x = (height_ne - height_nw) * (1.0 - y) + (height_se - height_sw) * y;
     let gradient_y = (height_sw - height_nw) * (1.0 - x) + (height_se - height_ne) * x;
-    let height = height_nw * (1.0 - x) * (1.0 - y)
-        + height_ne * x * (1.0 - y)
-        + height_sw * (1.0 - x) * y
-        + height_se * x * y;
+    let height = get_z_scaled_interpolated(map, map_size, pos_x, pos_y);
     nalgebra_glm::vec3(gradient_x, gradient_y, height)
+}
+
+fn get_z(tiles: &Vec<f32>, map_size: usize, x: usize, y: usize) -> f32 {
+    tiles[x + y * map_size]
+}
+
+fn get_z_scaled_interpolated(tiles: &Vec<f32>, map_size: usize, x: f32, y: f32) -> f32 {
+    assert!(!x.is_nan());
+    // The coordinates of the tile's origin (bottom left corner)
+    let x_origin = x.floor();
+    let y_origin = y.floor();
+
+    // Coordinates inside the tile. [0,1]
+    let x_offset = x - x_origin;
+    let y_offset = y - y_origin;
+
+    let ray_origin = nalgebra_glm::vec3(x, y, 10000.0);
+    let ray_direction = nalgebra_glm::vec3(0.0, 0.0, -1.0);
+
+    if y_offset <= 1.0 - x_offset {
+        // In bottom triangle
+        let (retval, _t) = intersect(
+            nalgebra_glm::vec3(
+                x_origin,
+                y_origin,
+                get_z(tiles, map_size, x_origin as usize, y_origin as usize),
+            ),
+            nalgebra_glm::vec3(
+                x_origin + 1.0,
+                y_origin,
+                get_z(tiles, map_size, x_origin as usize + 1, y_origin as usize),
+            ),
+            nalgebra_glm::vec3(
+                x_origin,
+                y_origin + 1.0,
+                get_z(tiles, map_size, x_origin as usize, y_origin as usize + 1),
+            ),
+            ray_origin,
+            ray_direction,
+        )
+        .unwrap();
+        retval.z
+    } else {
+        // In top triangle
+        let (retval, _t) = intersect(
+            nalgebra_glm::vec3(
+                x_origin + 1.0,
+                y_origin,
+                get_z(tiles, map_size, x_origin as usize + 1, y_origin as usize),
+            ),
+            nalgebra_glm::vec3(
+                x_origin + 1.0,
+                y_origin + 1.0,
+                get_z(
+                    tiles,
+                    map_size,
+                    x_origin as usize + 1,
+                    y_origin as usize + 1,
+                ),
+            ),
+            nalgebra_glm::vec3(
+                x_origin,
+                y_origin + 1.0,
+                get_z(tiles, map_size, x_origin as usize, y_origin as usize + 1),
+            ),
+            ray_origin,
+            ray_direction,
+        )
+        .unwrap();
+        retval.z
+    }
+}
+
+fn intersect(
+    v0: nalgebra_glm::Vec3,
+    v1: nalgebra_glm::Vec3,
+    v2: nalgebra_glm::Vec3,
+    ray_origin: nalgebra_glm::Vec3,
+    ray_direction: nalgebra_glm::Vec3,
+) -> Option<(nalgebra_glm::Vec3, f32)> {
+    const EPSILON: f32 = 0.0000001;
+    let edge1 = v1 - v0;
+    let edge2 = v2 - v0;
+    let h = nalgebra_glm::cross(&ray_direction, &edge2);
+    let a = nalgebra_glm::dot(&edge1, &h);
+
+    if a.abs() < EPSILON {
+        return None; // Ray is parallel to the triangle
+    }
+
+    let f = 1.0 / a;
+    let s = ray_origin - v0;
+    let u = f * nalgebra_glm::dot(&s, &h);
+
+    if u < 0.0 || u > 1.0 {
+        return None;
+    }
+
+    let q = nalgebra_glm::cross(&s, &edge1);
+    let v = f * nalgebra_glm::dot(&ray_direction, &q);
+
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+
+    let t = f * nalgebra_glm::dot(&edge2, &q);
+
+    let intersection_point = ray_origin + t * ray_direction;
+    Some((intersection_point, t))
 }

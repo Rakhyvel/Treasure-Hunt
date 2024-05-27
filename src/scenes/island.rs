@@ -271,7 +271,7 @@ impl Island {
         let mut rng = rand::thread_rng();
         let mut map = generate(MAP_SIZE, 0.1, rng.gen());
         create_bulge(&mut map);
-        erosion(&mut map, MAP_SIZE, 5120.0);
+        erosion(&mut map, MAP_SIZE, 51.0);
         let mut spawn_point = nalgebra_glm::vec3((MAP_SIZE / 2) as f32, (MAP_SIZE / 2) as f32, 1.0);
         for x in (MAP_SIZE / 2)..MAP_SIZE {
             let height = get_z_scaled_interpolated(&map, x as f32, MAP_SIZE as f32 / 2.0);
@@ -538,7 +538,7 @@ fn add_triangle(
 
     let avg_z = sum_z / 3.0;
     for _ in 0..3 {
-        if avg_z < 0.6 * dot_prod {
+        if avg_z < 0.75 * dot_prod {
             // sand
             colors.push(0.8);
             colors.push(0.7);

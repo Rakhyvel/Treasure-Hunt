@@ -1,5 +1,3 @@
-use rand::Rng;
-
 static HASH: [i32; 256] = [
     208, 34, 231, 213, 32, 248, 233, 56, 161, 78, 24, 140, 71, 48, 140, 254, 245, 255, 247, 247,
     40, 185, 248, 251, 245, 28, 124, 204, 204, 76, 36, 1, 107, 28, 234, 163, 202, 224, 245, 128,
@@ -75,13 +73,15 @@ fn lin_inter(x: f32, y: f32, s: f32) -> f32 {
 }
 
 pub fn erosion(map: &mut Vec<f32>, map_size: usize, intensity: f32) {
-    let inertia: f32 = 0.2;
-    let sediment_capacity_factor: f32 = 100.0;
-    let min_sediment_capacity: f32 = 100.0; // small values = more deposit
-    let deposit_speed = 0.5;
-    let erode_speed = 0.5;
+    let inertia: f32 = 0.01;
+    let sediment_capacity_factor: f32 = 1.0;
+    let min_sediment_capacity: f32 = 100000.0; // small values = more deposit
+    let deposit_speed = 0.01;
+    let erode_speed = 0.01;
     let evaporate_speed = 0.001;
-    let gravity = 4.0;
+    let gravity = 40.0;
+
+    let mut total_eroded: f32 = 0.0;
 
     for i in 0..(map_size as f32 * intensity) as usize {
         let scale = 1.0 / (2.0 * intensity);
@@ -90,10 +90,9 @@ pub fn erosion(map: &mut Vec<f32>, map_size: usize, intensity: f32) {
             scale * i as f32 * (i as f32).sin() + map_size as f32 * 0.5,
         );
         let mut dir = nalgebra_glm::vec2(0.0, 0.0);
-        let mut speed = 1.0;
-        let mut water = 0.0;
+        let mut water = 1.0;
         let mut sediment = 0.0;
-        for _ in 0..(map_size) {
+        for _ in 0..(map_size / 8) {
             let node = nalgebra_glm::vec2(pos.x.floor(), pos.y.floor());
             let droplet_index = (node.x as i32 + node.y as i32 * map_size as i32) as usize;
             let cell_offset = pos - node;
@@ -121,22 +120,19 @@ pub fn erosion(map: &mut Vec<f32>, map_size: usize, intensity: f32) {
             let delta_height = new_height - grad.z;
 
             // Calculate the droplet's sediment capacity (higher when moving fast down a slope and contains lots of water)
-            speed = gravity * nalgebra_glm::length(&grad.xy());
+            let speed = gravity * nalgebra_glm::length(&grad.xy());
             let sediment_capacity: f32 =
                 (speed * water * sediment_capacity_factor).min(min_sediment_capacity);
 
             let delta_z: f32 =
             // If carrying more sediment than capacity, or if flowing uphill:
             if sediment > sediment_capacity || delta_height > 0.0 {
-                if delta_height > 0.0 {
-                    delta_height.min(sediment)
-                } else {
-                    (sediment_capacity - sediment) * deposit_speed
-                }
+                (sediment_capacity - sediment) * deposit_speed
             } else {
                 -((sediment_capacity - sediment) * erode_speed).min(delta_height.abs())
             } ;
             sediment -= delta_z;
+            total_eroded += if delta_z < 0.0 { delta_z } else { 0.0 };
             map[droplet_index] += delta_z * (1.0 - cell_offset.x) * (1.0 - cell_offset.y);
             map[droplet_index + 1] += delta_z * cell_offset.x * (1.0 - cell_offset.y);
             map[droplet_index + map_size as usize] +=
@@ -144,12 +140,13 @@ pub fn erosion(map: &mut Vec<f32>, map_size: usize, intensity: f32) {
             map[droplet_index + 1 + map_size as usize] += delta_z * cell_offset.x * cell_offset.y;
 
             // Update droplets speed and water content
-            water -= evaporate_speed / speed + delta_z;
+            water -= evaporate_speed;
             if water < 0.0 || new_height < 0.5 {
                 break;
             }
         }
     }
+    println!("Total eroded: {}", total_eroded);
 }
 
 fn get_gradient(map: &mut Vec<f32>, map_size: usize, pos_x: f32, pos_y: f32) -> nalgebra_glm::Vec3 {

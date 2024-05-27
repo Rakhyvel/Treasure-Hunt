@@ -73,13 +73,13 @@ fn lin_inter(x: f32, y: f32, s: f32) -> f32 {
 }
 
 pub fn erosion(map: &mut Vec<f32>, map_size: usize, intensity: f32) {
-    let inertia: f32 = 0.01;
-    let sediment_capacity_factor: f32 = 1.0;
-    let min_sediment_capacity: f32 = 100000.0; // small values = more deposit
+    let inertia: f32 = 0.9;
+    let sediment_capacity_factor: f32 = 10.0;
+    let max_sediment_capacity: f32 = 1.0; // small values = more deposit
     let deposit_speed = 0.01;
-    let erode_speed = 0.01;
-    let evaporate_speed = 0.001;
-    let gravity = 40.0;
+    let erode_speed: f32 = 0.02;
+    let evaporate_speed = 0.0001;
+    let gravity = 10.0;
 
     let mut total_eroded: f32 = 0.0;
 
@@ -89,24 +89,26 @@ pub fn erosion(map: &mut Vec<f32>, map_size: usize, intensity: f32) {
             scale * i as f32 * (i as f32).cos() + map_size as f32 * 0.5,
             scale * i as f32 * (i as f32).sin() + map_size as f32 * 0.5,
         );
-        let mut dir = nalgebra_glm::vec2(0.0, 0.0);
+        let mut vel = nalgebra_glm::vec2(0.0, 0.0);
         let mut water = 1.0;
         let mut sediment = 0.0;
-        for _ in 0..(map_size / 8) {
+        for _ in 0..(map_size / 2) {
             let node = nalgebra_glm::vec2(pos.x.floor(), pos.y.floor());
             let droplet_index = (node.x as i32 + node.y as i32 * map_size as i32) as usize;
             let cell_offset = pos - node;
 
             let grad = get_gradient(map, map_size, pos.x, pos.y);
-            dir = dir * inertia - grad.xy() * (1.0 - inertia);
-            let len = nalgebra_glm::length(&dir);
+            vel *= inertia;
+            vel += gravity * -grad.xy();
+            let mut dir = vel;
+            let len = vel.x.max(vel.y);
             if len != 0.0 {
                 dir /= len; // This is (somehow) not the same as nalgebra_glm::normalize()
             }
             pos += dir;
 
             // Stop simulating droplet if it's not moving or has flowed over edge of map
-            if (dir.x == 0.0 && dir.y == 0.0)
+            if (vel.x <= 0.1 && vel.y <= 0.1)
                 || pos.x <= 0.0
                 || pos.x >= map_size as f32 - 1.0
                 || pos.y <= 0.0
@@ -120,17 +122,22 @@ pub fn erosion(map: &mut Vec<f32>, map_size: usize, intensity: f32) {
             let delta_height = new_height - grad.z;
 
             // Calculate the droplet's sediment capacity (higher when moving fast down a slope and contains lots of water)
-            let speed = gravity * nalgebra_glm::length(&grad.xy());
+            let speed = nalgebra_glm::length(&vel);
             let sediment_capacity: f32 =
-                (speed * water * sediment_capacity_factor).min(min_sediment_capacity);
+                (speed * water * sediment_capacity_factor).min(max_sediment_capacity);
 
             let delta_z: f32 =
             // If carrying more sediment than capacity, or if flowing uphill:
             if sediment > sediment_capacity || delta_height > 0.0 {
-                (sediment_capacity - sediment) * deposit_speed
+                let deposit_amount = (sediment_capacity - sediment) * deposit_speed;
+                if delta_height > 0.0 {
+                    delta_height.min(deposit_amount)
+                } else {
+                    deposit_amount
+                }
             } else {
-                -((sediment_capacity - sediment) * erode_speed).min(delta_height.abs())
-            } ;
+                -(water * erode_speed).min(delta_height.abs())
+            };
             sediment -= delta_z;
             total_eroded += if delta_z < 0.0 { delta_z } else { 0.0 };
             map[droplet_index] += delta_z * (1.0 - cell_offset.x) * (1.0 - cell_offset.y);
@@ -141,7 +148,7 @@ pub fn erosion(map: &mut Vec<f32>, map_size: usize, intensity: f32) {
 
             // Update droplets speed and water content
             water -= evaporate_speed;
-            if water < 0.0 || new_height < 0.5 {
+            if water < 0.0 {
                 break;
             }
         }
@@ -175,6 +182,7 @@ fn get_z(tiles: &Vec<f32>, map_size: usize, x: usize, y: usize) -> f32 {
     tiles[x + y * map_size]
 }
 
+// TODO: These NEED to be all put into a single file
 fn get_z_scaled_interpolated(tiles: &Vec<f32>, map_size: usize, x: f32, y: f32) -> f32 {
     assert!(!x.is_nan());
     // The coordinates of the tile's origin (bottom left corner)

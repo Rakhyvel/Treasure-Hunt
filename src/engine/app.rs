@@ -97,6 +97,7 @@ pub fn run(
     let mut lag = 0;
     let mut elapsed;
     let mut ticks = 0;
+    let mut frames = 0;
     const DELTA_T: u128 = 16;
     while app.running {
         app.seconds = time.elapsed().as_secs_f32();
@@ -137,6 +138,7 @@ pub fn run(
             }
             if let Some(scene_ref) = scene_stack.last() {
                 scene_ref.borrow_mut().render(&app);
+                frames += 1;
             }
             window.gl_swap_window();
         }
@@ -145,9 +147,10 @@ pub fn run(
         let freq = unsafe { SDL_GetPerformanceFrequency() };
         let seconds = (end as f64 - (start as f64)) / (freq as f64);
         if seconds > 5.0 {
-            println!("5 seconds; ticks: {}", ticks);
+            println!("5 seconds; ticks: {}; fps: {}", ticks, frames / 5);
             start = end as u128;
             ticks = 0;
+            frames = 0;
         }
     }
     Ok(())

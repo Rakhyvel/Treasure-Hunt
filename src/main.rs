@@ -13,10 +13,12 @@ use scenes::island::Island;
 // x Text
 // x ecs
 // - Maps & Treasure
+// - Hidden powerups (faster boots, swim floaties, shovel)
 // - Enemy mobs
 // - Health bar, weapons
 // - Menu
 // - Save serialization
+// - Sound
 
 fn main() -> Result<(), String> {
     run(800, 600, "Treasure Hunt", &|_app| {

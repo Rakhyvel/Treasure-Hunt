@@ -11,7 +11,7 @@ pub struct Input {
 
 pub struct Mesh {
     pub inputs: Vec<Input>,
-    indices: Vec<u16>,
+    indices: Vec<u32>,
 
     pub position: nalgebra_glm::Vec3,
     pub scale: nalgebra_glm::Vec3,
@@ -19,7 +19,7 @@ pub struct Mesh {
 }
 
 impl Mesh {
-    pub fn new(indices: Vec<u16>, datas: Vec<Vec<f32>>) -> Self {
+    pub fn new(indices: Vec<u32>, datas: Vec<Vec<f32>>) -> Self {
         let inputs: Vec<Input> = datas
             .iter()
             .map(|data| Input {
@@ -46,7 +46,7 @@ impl Mesh {
         let obj: Obj<TexturedVertex> = load_obj(&obj_file_data[..]).unwrap();
         let vb: Vec<TexturedVertex> = obj.vertices;
 
-        let indices = obj.indices;
+        let indices = vec_u32_from_vec_u16(&obj.indices);
         let vertices = flatten_positions(&vb);
         let normals = flatten_normals(&vb);
         let uv = flatten_uv(&vb);
@@ -123,7 +123,7 @@ impl Mesh {
         for i in 0..self.inputs.len() {
             self.inputs[i].vbo.set(&self.inputs[i].data);
             self.inputs[i].vao.enable(i as u32);
-            self.inputs[i].ibo.set(&vec_u32_from_vec_u16(&self.indices));
+            self.inputs[i].ibo.set(&self.indices);
         }
     }
 }

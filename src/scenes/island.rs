@@ -19,7 +19,7 @@ use crate::{
     App, Scene,
 };
 
-const MAP_SIZE: usize = 500;
+const MAP_SIZE: usize = 512;
 const SCALE: f32 = 10.0;
 const UNIT_PER_METER: f32 = 0.2;
 const PERSON_HEIGHT: f32 = 1.6764 * UNIT_PER_METER;

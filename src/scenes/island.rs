@@ -1,7 +1,4 @@
-use std::{
-    f32::consts::PI,
-    sync::{Arc, Mutex},
-};
+use std::f32::consts::PI;
 
 use nalgebra_glm::pi;
 use rand::Rng;
@@ -12,17 +9,18 @@ use crate::{
     engine::{
         camera::{Camera, ProjectionKind},
         mesh::{Mesh, MeshMgr, MeshMgrResource},
-        objects::{create_program, Program, Texture},
+        objects::{create_program, Fbo, Program, Texture, Uniform},
         perlin::*,
-        text::{initialize_gui, FontMgr, Text},
+        text::{initialize_gui, FontMgr, Quad},
     },
     App, Scene,
 };
 
-const MAP_SIZE: usize = 512;
-const SCALE: f32 = 10.0;
+const MAP_SIZE: usize = 100;
+const SCALE: f32 = MAP_SIZE as f32 / 32.0;
 const UNIT_PER_METER: f32 = 0.2;
 const PERSON_HEIGHT: f32 = 1.6764 * UNIT_PER_METER;
+const SHADOW_SIZE: i32 = 4096;
 
 pub const QUAD_DATA: &[u8] = include_bytes!("../../res/quad.obj");
 pub const CONE_DATA: &[u8] = include_bytes!("../../res/cone.obj");
@@ -37,9 +35,25 @@ struct TickResource {
 }
 
 #[derive(Default)]
-struct OpenGlResource {
-    camera: Camera,
-    program: Program,
+pub struct OpenGlResource {
+    // TODO: Put in engine I think
+    pub camera: Camera,
+    pub program: Program,
+}
+
+#[derive(Default)]
+pub struct UIResource {
+    // TODO: Put in engine I think
+    pub camera: Camera,
+    pub program: Program,
+}
+
+#[derive(Default)]
+struct SunResource {
+    shadow_camera: Camera,
+    shadow_program: Program,
+    fbo: Fbo,
+    depth_map: Texture,
 }
 
 #[derive(Default)]
@@ -67,6 +81,12 @@ struct Renderable {
     render_dist: Option<f32>, //< When Some, only render when the position is this close to the camera
 }
 
+#[derive(Default)]
+struct CastsShadow;
+impl Component for CastsShadow {
+    type Storage = NullStorage<Self>;
+}
+
 /*
  * SYSTEMS
  */
@@ -76,6 +96,7 @@ impl<'a> System<'a> for SkySystem {
         Read<'a, App>,
         Read<'a, OpenGlResource>,
         Read<'a, TickResource>,
+        // Write<'a, SunResource>,
     );
     fn run(&mut self, (app, open_gl, tick_res): Self::SystemData) {
         let model_t = tick_res.t * 0.0001 + 0.4;
@@ -98,6 +119,8 @@ impl<'a> System<'a> for SkySystem {
             nalgebra_glm::vec3(0.0, model_t.sin(), model_t.cos()),
             nalgebra_glm::vec2(app.screen_width as f32, app.screen_height as f32),
         );
+        // sun.shadow_camera.position =
+        //     nalgebra_glm::vec3(0.0, model_t.sin() * 1000.0, model_t.cos() * 1000.0);
     }
 }
 
@@ -105,11 +128,35 @@ struct RenderSystem;
 impl<'a> System<'a> for RenderSystem {
     type SystemData = (
         ReadStorage<'a, Renderable>,
+        Read<'a, App>,
         Read<'a, MeshMgrResource>,
         Read<'a, OpenGlResource>,
+        Read<'a, SunResource>,
     );
 
-    fn run(&mut self, (render_comps, mesh_mgr, open_gl): Self::SystemData) {
+    fn run(&mut self, (render_comps, app, mesh_mgr, open_gl, sun): Self::SystemData) {
+        unsafe {
+            gl::Viewport(0, 0, app.screen_width, app.screen_height);
+            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
+        }
+
+        open_gl.program.set();
+        sun.depth_map.activate(gl::TEXTURE1);
+        sun.depth_map
+            .associate_uniform(open_gl.program.id(), 1, "shadow_map");
+
+        let u_model_matrix = Uniform::new(open_gl.program.id(), "light_mvp").unwrap();
+        let (view_matrix, proj_matrix) = sun.shadow_camera.gen_view_proj_matrices();
+        let light_space_mvp = proj_matrix * view_matrix;
+        unsafe {
+            gl::UniformMatrix4fv(
+                u_model_matrix.id,
+                1,
+                gl::FALSE,
+                &light_space_mvp.columns(0, 4)[0],
+            );
+        }
+
         for renderable in render_comps.join() {
             match renderable.render_dist {
                 Some(d) => {
@@ -120,10 +167,10 @@ impl<'a> System<'a> for RenderSystem {
                 None => {}
             }
             let mesh = mesh_mgr.data.get_mesh(renderable.mesh_id);
-            open_gl.program.set();
+            renderable.texture.activate(gl::TEXTURE0);
             renderable
                 .texture
-                .activate(gl::TEXTURE0, open_gl.program.id());
+                .associate_uniform(open_gl.program.id(), 0, "texture0");
             mesh.draw(
                 &open_gl.program,
                 &open_gl.camera,
@@ -131,6 +178,42 @@ impl<'a> System<'a> for RenderSystem {
                 renderable.scale,
             );
         }
+    }
+}
+
+struct ShadowSystem;
+impl<'a> System<'a> for ShadowSystem {
+    type SystemData = (
+        ReadStorage<'a, Renderable>,
+        Read<'a, MeshMgrResource>,
+        Read<'a, SunResource>,
+        WriteStorage<'a, CastsShadow>,
+    );
+
+    fn run(&mut self, (render_comps, mesh_mgr, sun, _): Self::SystemData) {
+        sun.fbo.bind();
+        unsafe {
+            gl::Viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+            // gl::Enable(gl::CULL_FACE);
+            // gl::CullFace(gl::BACK);
+            gl::Clear(gl::DEPTH_BUFFER_BIT)
+        }
+
+        // Use a simple depth shader program
+        sun.shadow_program.set();
+
+        // Render the stuff that casts shadows
+        for renderable in render_comps.join() {
+            let mesh = mesh_mgr.data.get_mesh(renderable.mesh_id);
+            mesh.draw(
+                &sun.shadow_program,
+                &sun.shadow_camera,
+                renderable.position,
+                renderable.scale,
+            );
+        }
+
+        sun.fbo.unbind();
     }
 }
 
@@ -237,7 +320,6 @@ pub struct Island {
     world: World,
     update_dispatcher: Dispatcher<'static, 'static>,
     render_dispatcher: Dispatcher<'static, 'static>,
-    _ui_camera: Arc<Mutex<Camera>>, // TODO: Probably remove too
 }
 
 impl Scene for Island {
@@ -256,6 +338,7 @@ impl Island {
         // Setup ECS the world
         let mut world = World::new();
         world.register::<Renderable>();
+        world.register::<CastsShadow>();
 
         // Setup the dispatchers
         let mut update_dispatcher_builder = DispatcherBuilder::new();
@@ -264,6 +347,7 @@ impl Island {
 
         let mut render_dispatcher_builder = DispatcherBuilder::new();
         render_dispatcher_builder.add(SkySystem, "sky system", &[]);
+        render_dispatcher_builder.add(ShadowSystem, "shadow system", &[]);
         render_dispatcher_builder.add(RenderSystem, "render system", &[]);
         initialize_gui(&mut world, &mut render_dispatcher_builder);
 
@@ -299,19 +383,15 @@ impl Island {
             mesh_mgr.add_mesh(Mesh::from_obj(QUAD_DATA, nalgebra_glm::vec3(1.0, 1.0, 1.0)));
         let cube_mesh =
             mesh_mgr.add_mesh(Mesh::from_obj(CUBE_DATA, nalgebra_glm::vec3(1.0, 1.0, 1.0)));
-        let tree_mesh = mesh_mgr.add_mesh(Mesh::from_obj(
-            CONE_DATA,
-            nalgebra_glm::vec3(0.2, 0.25, 0.0),
-        ));
+        let tree_mesh =
+            mesh_mgr.add_mesh(Mesh::from_obj(CONE_DATA, nalgebra_glm::vec3(1.0, 1.0, 1.0)));
         world.insert(MeshMgrResource { data: mesh_mgr });
 
-        // Setup the program and cameras
-        let ui_camera = Arc::new(Mutex::new(Camera::new(
-            nalgebra_glm::vec3(0.0, 0.0, 1.0),
-            nalgebra_glm::vec3(0.0, 0.0, 0.0),
-            nalgebra_glm::vec3(0.0, 1.0, 0.0),
-            ProjectionKind::Orthographic,
-        )));
+        let depth_map = Texture::new();
+        depth_map.load_depth_buffer(SHADOW_SIZE, SHADOW_SIZE);
+        let fbo = Fbo::new();
+        fbo.bind();
+        depth_map.post_bind();
 
         // Add entities
         world
@@ -323,6 +403,7 @@ impl Island {
                 texture: Texture::from_png("res/grass.png"),
                 render_dist: None,
             })
+            .with(CastsShadow {})
             .build();
         world
             .create_entity()
@@ -336,15 +417,24 @@ impl Island {
             .build();
         world
             .create_entity()
-            .with(Text::new(
+            .with(Quad::from_text(
                 "+",
                 font,
                 Color::RGBA(255, 255, 255, 255),
-                Arc::clone(&ui_camera),
                 quad_mesh,
             ))
             .build();
-        for _ in 0..(MAP_SIZE * 2) {
+        world
+            .create_entity()
+            .with(Quad::from_texture(
+                depth_map.clone(),
+                nalgebra_glm::vec3(-0.68, -0.57, 0.0),
+                256,
+                256,
+                quad_mesh,
+            ))
+            .build();
+        for _ in 0..(MAP_SIZE) {
             // Add all the trees
             let mut attempts = 0;
             loop {
@@ -359,11 +449,12 @@ impl Island {
                         .create_entity()
                         .with(Renderable {
                             mesh_id: tree_mesh,
-                            position: nalgebra_glm::vec3(x, y, height),
-                            scale: nalgebra_glm::vec3(1.5, 1.5, 3.0),
-                            texture: Texture::from_png("res/grass.png"),
+                            position: nalgebra_glm::vec3(x, y, height + 1.9),
+                            scale: nalgebra_glm::vec3(1.0, 1.0, 1.0),
+                            texture: Texture::from_png("res/tree.png"),
                             render_dist: Some(128.0),
                         })
+                        .with(CastsShadow {})
                         .build();
                     break;
                 }
@@ -393,9 +484,10 @@ impl Island {
                             mesh_id: cube_mesh,
                             position: nalgebra_glm::vec3(x, y, height),
                             scale: nalgebra_glm::vec3(0.1, 0.1, 3.1),
-                            texture: Texture::from_png("res/grass.png"),
+                            texture: Texture::from_png("res/tree.png"),
                             render_dist: Some(128.0),
                         })
+                        .with(CastsShadow {})
                         .build();
                     break;
                 }
@@ -416,7 +508,24 @@ impl Island {
                 nalgebra_glm::vec3(0.0, 0.0, 1.0),
                 ProjectionKind::Perspective { fov: 0.9 },
             ),
-            program: create_program(include_str!("../.vert"), include_str!("../.frag")).unwrap(),
+            program: create_program(
+                include_str!("../shaders/3d.vert"),
+                include_str!("../shaders/3d.frag"),
+            )
+            .unwrap(),
+        });
+        world.insert(UIResource {
+            camera: Camera::new(
+                nalgebra_glm::vec3(0.0, 0.0, 1.0),
+                nalgebra_glm::vec3(0.0, 0.0, 0.0),
+                nalgebra_glm::vec3(0.0, 1.0, 0.0),
+                ProjectionKind::Orthographic { scale: 1.0 },
+            ),
+            program: create_program(
+                include_str!("../shaders/2d.vert"),
+                include_str!("../shaders/2d.frag"),
+            )
+            .unwrap(),
         });
         world.insert(PlayerResource {
             vel: nalgebra_glm::vec3(0.0, 0.0, 0.0),
@@ -426,9 +535,24 @@ impl Island {
         });
         world.insert(TileResource { tiles: map });
 
+        world.insert(SunResource {
+            shadow_camera: Camera::new(
+                nalgebra_glm::vec3(MAP_SIZE as f32 / -2.0, 0.0, SCALE * 2.0),
+                nalgebra_glm::vec3(MAP_SIZE as f32 / 2.0, MAP_SIZE as f32 / 2.0, SCALE * 0.5),
+                nalgebra_glm::vec3(0.0, 0.0, 1.0),
+                ProjectionKind::Orthographic { scale: -30.0 },
+            ),
+            shadow_program: create_program(
+                include_str!("../shaders/shadow.vert"),
+                include_str!("../shaders/shadow.frag"),
+            )
+            .unwrap(),
+            fbo,
+            depth_map,
+        });
+
         Self {
             world,
-            _ui_camera: ui_camera,
             update_dispatcher: update_dispatcher_builder.build(),
             render_dispatcher: render_dispatcher_builder.build(),
         }

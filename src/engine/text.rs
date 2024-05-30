@@ -1,8 +1,5 @@
 use specs::prelude::*;
-use std::{
-    path::Path,
-    sync::{Arc, Mutex},
-};
+use std::path::Path;
 
 use sdl2::{
     pixels::Color,
@@ -10,13 +7,9 @@ use sdl2::{
 };
 use specs::{Component, DispatcherBuilder, VecStorage, World};
 
-use crate::App;
+use crate::{scenes::island::UIResource, App};
 
-use super::{
-    camera::Camera,
-    mesh::MeshMgrResource,
-    objects::{create_program, Program, Texture},
-};
+use super::{mesh::MeshMgrResource, objects::Texture};
 
 pub struct FontMgr {
     ttf_context: Sdl2TtfContext,
@@ -35,57 +28,32 @@ impl FontMgr {
     }
 }
 
-#[derive(Component)]
-#[storage(VecStorage)]
-pub struct Text {
+pub struct Quad {
     mesh_id: usize,
     position: nalgebra_glm::Vec3,
     width: i32,
     height: i32,
     texture: Texture,
-    camera: Arc<Mutex<Camera>>,
-    program: Arc<Mutex<Program>>,
-}
-struct TextSystem;
-
-impl<'a> System<'a> for TextSystem {
-    type SystemData = (
-        ReadStorage<'a, Text>,
-        Read<'a, MeshMgrResource>,
-        Read<'a, App>,
-    );
-
-    fn run(&mut self, (text_components, mesh_mgr, app): Self::SystemData) {
-        for text in text_components.join() {
-            let program_guard = text.program.as_ref().try_lock().unwrap();
-            let camera_guard = text.camera.as_ref().try_lock().unwrap();
-            let mesh = mesh_mgr.data.get_mesh(text.mesh_id);
-            program_guard.set();
-            text.texture.activate(gl::TEXTURE0, program_guard.id());
-            mesh.draw(
-                &program_guard,
-                &camera_guard,
-                text.position,
-                nalgebra_glm::vec3(
-                    (text.width as f32) / (app.screen_width as f32),
-                    (text.height as f32) / (app.screen_height as f32),
-                    1.0,
-                ),
-            );
-            drop(camera_guard);
-            drop(program_guard);
-        }
-    }
 }
 
-impl Text {
-    pub fn new(
-        text: &'static str,
-        font: Font,
-        color: Color,
-        camera: Arc<Mutex<Camera>>,
+impl Quad {
+    pub fn from_texture(
+        texture: Texture,
+        position: nalgebra_glm::Vec3,
+        width: i32,
+        height: i32,
         quad_mesh_id: usize,
     ) -> Self {
+        Self {
+            mesh_id: quad_mesh_id,
+            position,
+            width,
+            height,
+            texture,
+        }
+    }
+
+    pub fn from_text(text: &'static str, font: Font, color: Color, quad_mesh_id: usize) -> Self {
         let surface = font
             .render(text)
             .blended(color)
@@ -97,21 +65,46 @@ impl Text {
         let height = surface.height();
 
         let texture = Texture::from_surface(surface);
-        let program = Arc::new(Mutex::new(
-            create_program(
-                include_str!("../shaders/2d.vert"),
-                include_str!("../shaders/2d.frag"),
-            )
-            .unwrap(),
-        ));
         Self {
             mesh_id: quad_mesh_id,
             position: nalgebra_glm::vec3(0.0, 0.0, 0.0),
             width: width as i32,
             height: height as i32,
             texture,
-            camera,
-            program: Arc::clone(&program),
+        }
+    }
+}
+
+impl Component for Quad {
+    type Storage = VecStorage<Self>;
+}
+
+struct QuadSystem;
+impl<'a> System<'a> for QuadSystem {
+    type SystemData = (
+        ReadStorage<'a, Quad>,
+        Read<'a, MeshMgrResource>,
+        Read<'a, App>,
+        Read<'a, UIResource>,
+    );
+
+    fn run(&mut self, (text_components, mesh_mgr, app, open_gl): Self::SystemData) {
+        for text in text_components.join() {
+            let mesh = mesh_mgr.data.get_mesh(text.mesh_id);
+            open_gl.program.set();
+            text.texture.activate(gl::TEXTURE0);
+            text.texture
+                .associate_uniform(open_gl.program.id(), 0, "texture0");
+            mesh.draw(
+                &open_gl.program,
+                &open_gl.camera,
+                text.position,
+                nalgebra_glm::vec3(
+                    (text.width as f32) / (app.screen_width as f32),
+                    (text.height as f32) / (app.screen_height as f32),
+                    1.0,
+                ),
+            );
         }
     }
 }
@@ -119,8 +112,8 @@ impl Text {
 pub fn initialize_gui(world: &mut World, dispatcher_builder: &mut DispatcherBuilder) {
     // TODO: We will need an update and a render dispatch
     // Register GUI components
-    world.register::<Text>();
+    world.register::<Quad>();
 
     // Add GUI systems to the dispatcher
-    dispatcher_builder.add(TextSystem, "text_system", &[]);
+    dispatcher_builder.add(QuadSystem, "quad system", &[]);
 }

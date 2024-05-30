@@ -132,10 +132,6 @@ pub fn run(
         }
 
         if !scene_stale {
-            unsafe {
-                gl::Viewport(0, 0, app.screen_width, app.screen_height);
-                gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
-            }
             if let Some(scene_ref) = scene_stack.last() {
                 scene_ref.borrow_mut().render(&app);
                 frames += 1;

@@ -77,7 +77,7 @@ pub fn erosion(map: &mut Vec<f32>, map_size: usize, intensity: f32) {
     let max_sediment_capacity: f32 = 1.0; // small values = more deposit
     let deposit_speed = 0.01;
     let erode_speed: f32 = 0.01;
-    let evaporate_speed = 0.001;
+    let evaporate_speed = 0.00001;
     let gravity = 10.0;
 
     let mut total_eroded: f32 = 0.0;
@@ -132,14 +132,14 @@ pub fn erosion(map: &mut Vec<f32>, map_size: usize, intensity: f32) {
             let delta_z: f32 =
             // If carrying more sediment than capacity, or if flowing uphill:
             if sediment > sediment_capacity || delta_height > 0.0 {
-                let deposit_amount = (sediment_capacity - sediment) * deposit_speed / (new_height - 0.5);
+                let deposit_amount = (sediment_capacity - sediment) * deposit_speed;
                 if delta_height > 0.0 {
                     delta_height.min(deposit_amount)
                 } else {
                     deposit_amount
                 }
             } else {
-                -(erosion_ease * erode_speed * (new_height - 0.5)).min(delta_height.abs())
+                -(erosion_ease * erode_speed).min(delta_height.abs())
             };
             sediment -= delta_z;
             total_eroded += if delta_z < 0.0 { delta_z } else { 0.0 };

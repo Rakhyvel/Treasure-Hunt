@@ -1,6 +1,6 @@
 pub enum ProjectionKind {
     Perspective { fov: f32 },
-    Orthographic,
+    Orthographic { scale: f32 },
 }
 
 impl Default for ProjectionKind {
@@ -38,7 +38,9 @@ impl Camera {
             ProjectionKind::Perspective { fov } => {
                 nalgebra_glm::perspective(1.0, fov, 0.01, 9.296e+9)
             }
-            ProjectionKind::Orthographic => nalgebra_glm::ortho(-1.0, 1.0, -1.0, 1.0, 0.1, 10.0),
+            ProjectionKind::Orthographic { scale } => {
+                nalgebra_glm::ortho(-scale, scale, -scale, scale, 0.1, 1000.0)
+            }
         };
         (view_matrix, proj_matrix)
     }

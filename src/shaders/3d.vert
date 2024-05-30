@@ -5,6 +5,7 @@ uniform vec3 u_sun_dir;
 uniform mat4 u_model_matrix;
 uniform mat4 u_view_matrix;
 uniform mat4 u_proj_matrix;
+uniform mat4 light_mvp; // For shadow mapping
 
 layout (location = 0) in vec3 Position;
 layout (location = 1) in vec3 Normal_modelspace;
@@ -15,7 +16,7 @@ out vec3 texCoord;
 out vec3 color;
 out vec3 Normal_cameraspace;
 out vec3 LightDirection_cameraspace;
-out vec3 eye_direction_cameraspace;
+out vec4 light_space_pos; // For shadow mapping
 
 void main()
 {
@@ -36,4 +37,5 @@ void main()
     gl_Position = uv;
     texCoord = texture_coord;
     color = Color;
+    light_space_pos = light_mvp * vec4(Position, 1.0); // For shadow mapping
 }

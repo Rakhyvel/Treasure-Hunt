@@ -350,6 +350,7 @@ impl Uniform {
     }
 }
 
+#[derive(Clone)]
 pub struct Texture {
     pub id: GLuint,
 }
@@ -447,12 +448,71 @@ impl Texture {
         Ok(())
     }
 
-    pub fn activate(&self, unit: GLuint, program_id: u32) {
+    pub fn load_depth_buffer(&self, width: i32, height: i32) {
+        self.bind();
+
+        unsafe {
+            gl::TexImage2D(
+                gl::TEXTURE_2D,
+                0,
+                gl::DEPTH_COMPONENT as GLint,
+                width,
+                height,
+                0,
+                gl::DEPTH_COMPONENT,
+                gl::FLOAT,
+                std::ptr::null(),
+            );
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as GLint);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as GLint);
+            gl::TexParameteri(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_WRAP_S,
+                gl::CLAMP_TO_BORDER as GLint,
+            );
+            gl::TexParameteri(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_WRAP_T,
+                gl::CLAMP_TO_BORDER as GLint,
+            );
+            let border_color: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+            gl::TexParameterfv(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_BORDER_COLOR,
+                border_color.as_ptr(),
+            );
+        }
+    }
+
+    pub fn post_bind(&self) {
+        unsafe {
+            gl::FramebufferTexture2D(
+                gl::FRAMEBUFFER,
+                gl::DEPTH_ATTACHMENT,
+                gl::TEXTURE_2D,
+                self.id,
+                0,
+            );
+            gl::DrawBuffer(gl::NONE);
+            gl::ReadBuffer(gl::NONE);
+
+            if gl::CheckFramebufferStatus(gl::FRAMEBUFFER) != gl::FRAMEBUFFER_COMPLETE {
+                panic!("Framebuffer is not complete!");
+            }
+        };
+    }
+
+    pub fn activate(&self, unit: GLuint) {
         unsafe {
             gl::ActiveTexture(unit);
-            let uniform = CString::new("texture0").unwrap();
             self.bind();
-            gl::Uniform1i(gl::GetUniformLocation(program_id, uniform.as_ptr()), 0)
+        }
+    }
+
+    pub fn associate_uniform(&self, program_id: u32, unit: GLint, uniform_name: &str) {
+        unsafe {
+            let uniform = CString::new(uniform_name).unwrap();
+            gl::Uniform1i(gl::GetUniformLocation(program_id, uniform.as_ptr()), unit)
         }
     }
 }
@@ -462,5 +522,40 @@ impl Drop for Texture {
         unsafe {
             gl::DeleteTextures(1, [self.id].as_ptr());
         }
+    }
+}
+impl Default for Texture {
+    fn default() -> Self {
+        Self { id: 0 }
+    }
+}
+
+pub struct Fbo {
+    pub id: GLuint,
+}
+
+impl Fbo {
+    pub fn new() -> Self {
+        let mut id: GLuint = 0;
+        unsafe {
+            gl::GenFramebuffers(1, &mut id);
+        }
+        Self { id }
+    }
+
+    pub fn bind(&self) {
+        unsafe {
+            gl::BindFramebuffer(gl::FRAMEBUFFER, self.id);
+        }
+    }
+
+    pub fn unbind(&self) {
+        unsafe { gl::BindFramebuffer(gl::FRAMEBUFFER, 0) }
+    }
+}
+
+impl Default for Fbo {
+    fn default() -> Self {
+        Self { id: 0 }
     }
 }

@@ -254,9 +254,8 @@ impl<'a> System<'a> for ShadowSystem {
         let camera_frustrum_corners_world_space = open_gl.camera.compute_frustum_corners();
         open_gl.frustrum_corners = camera_frustrum_corners_world_space;
         // Transform the view frustrum corners to light-space (1st time)
-        sun.shadow_camera.position = sun.shadow_camera.lookat + sun.light_dir * 100.0;
-        sun.shadow_camera.lookat =
-            nalgebra_glm::vec3(MAP_SIZE as f32 * 0.5, MAP_SIZE as f32 * 0.5, 0.5 * SCALE);
+        sun.shadow_camera.position = nalgebra_glm::zero();
+        sun.shadow_camera.lookat = sun.shadow_camera.position - sun.light_dir;
         let (light_view_matrix, _) = sun.shadow_camera.gen_view_proj_matrices();
         let mut camera_frustrum_corners_light_space = [nalgebra_glm::vec4(0.0, 0.0, 0.0, 1.0); 8];
         for (i, &corner) in camera_frustrum_corners_world_space.iter().enumerate() {
@@ -297,7 +296,7 @@ impl<'a> System<'a> for ShadowSystem {
             right: max_light_space.x,
             bottom: min_light_space.y,
             top: max_light_space.y,
-            near: 0.01,
+            near: min_light_space.z,
             far: 5000.0,
         };
 

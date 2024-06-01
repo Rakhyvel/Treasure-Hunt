@@ -72,6 +72,16 @@ impl Mesh {
         }
     }
 
+    pub fn get_model_matrix(
+        position: nalgebra_glm::Vec3,
+        scale: nalgebra_glm::Vec3,
+    ) -> nalgebra_glm::Mat4 {
+        let mut model_matrix = nalgebra_glm::one();
+        model_matrix = nalgebra_glm::translate(&model_matrix, &position);
+        model_matrix = nalgebra_glm::scale(&model_matrix, &scale);
+        model_matrix
+    }
+
     pub fn draw(
         &self,
         program: &Program,
@@ -82,9 +92,7 @@ impl Mesh {
         let u_model_matrix = Uniform::new(program.id(), "u_model_matrix").unwrap();
         let u_view_matrix = Uniform::new(program.id(), "u_view_matrix").unwrap();
         let u_proj_matrix = Uniform::new(program.id(), "u_proj_matrix").unwrap();
-        let mut model_matrix = nalgebra_glm::one();
-        model_matrix = nalgebra_glm::translate(&model_matrix, &position);
-        model_matrix = nalgebra_glm::scale(&model_matrix, &scale);
+        let model_matrix = Mesh::get_model_matrix(position, scale);
         let (view_matrix, proj_matrix) = camera.gen_view_proj_matrices();
         unsafe {
             gl::UniformMatrix4fv(

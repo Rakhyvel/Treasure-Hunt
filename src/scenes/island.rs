@@ -17,10 +17,10 @@ use crate::{
 };
 
 const MAP_SIZE: usize = 100;
-const SCALE: f32 = MAP_SIZE as f32 / 32.0;
+const SCALE: f32 = MAP_SIZE as f32 / 64.0;
 const UNIT_PER_METER: f32 = 0.2;
-const PERSON_HEIGHT: f32 = 1.6764 * UNIT_PER_METER;
-const SHADOW_SIZE: i32 = 4096;
+const PERSON_HEIGHT: f32 = 10.6764 * UNIT_PER_METER;
+const SHADOW_SIZE: i32 = 500;
 
 pub const QUAD_DATA: &[u8] = include_bytes!("../../res/quad.obj");
 pub const CONE_DATA: &[u8] = include_bytes!("../../res/cone.obj");
@@ -39,6 +39,7 @@ pub struct OpenGlResource {
     // TODO: Put in engine I think
     pub camera: Camera,
     pub program: Program,
+    frustrum_corners: [nalgebra_glm::Vec4; 8],
 }
 
 #[derive(Default)]
@@ -54,6 +55,7 @@ struct SunResource {
     shadow_program: Program,
     fbo: Fbo,
     depth_map: Texture,
+    light_dir: nalgebra_glm::Vec3,
 }
 
 #[derive(Default)]
@@ -87,6 +89,20 @@ impl Component for CastsShadow {
     type Storage = NullStorage<Self>;
 }
 
+#[derive(Default)]
+struct TheActualSun;
+impl Component for TheActualSun {
+    type Storage = NullStorage<Self>;
+}
+
+#[derive(Default)]
+struct FrustrumMarker {
+    i: usize,
+}
+impl Component for FrustrumMarker {
+    type Storage = HashMapStorage<Self>;
+}
+
 /*
  * SYSTEMS
  */
@@ -96,10 +112,10 @@ impl<'a> System<'a> for SkySystem {
         Read<'a, App>,
         Read<'a, OpenGlResource>,
         Read<'a, TickResource>,
-        // Write<'a, SunResource>,
+        Write<'a, SunResource>,
     );
-    fn run(&mut self, (app, open_gl, tick_res): Self::SystemData) {
-        let model_t = tick_res.t * 0.0001 + 0.4;
+    fn run(&mut self, (app, open_gl, tick_res, mut sun): Self::SystemData) {
+        let model_t = tick_res.t * 0.001 + 0.3;
         unsafe {
             let day_color = nalgebra_glm::vec3(172.0, 205.0, 248.0);
             let night_color = nalgebra_glm::vec3(5.0, 6.0, 7.0);
@@ -109,7 +125,7 @@ impl<'a> System<'a> for SkySystem {
             } else {
                 night_color
             };
-            let dnf = model_t.sin().powf(10.0);
+            let dnf = model_t.sin().powf(100.0);
             let result = dnf * red_color + (1.0 - dnf) * do_color;
             gl::ClearColor(result.x / 255., result.y / 255., result.z / 255., 1.0);
         }
@@ -119,8 +135,37 @@ impl<'a> System<'a> for SkySystem {
             nalgebra_glm::vec3(0.0, model_t.sin(), model_t.cos()),
             nalgebra_glm::vec2(app.screen_width as f32, app.screen_height as f32),
         );
-        // sun.shadow_camera.position =
-        //     nalgebra_glm::vec3(0.0, model_t.sin() * 1000.0, model_t.cos() * 1000.0);
+
+        sun.light_dir = nalgebra_glm::vec3(0.0, model_t.sin(), model_t.cos());
+    }
+}
+
+struct SunSystem;
+impl<'a> System<'a> for SunSystem {
+    type SystemData = (
+        ReadStorage<'a, TheActualSun>,
+        WriteStorage<'a, Renderable>,
+        Read<'a, SunResource>,
+    );
+
+    fn run(&mut self, (sun_comps, mut renderables, sun): Self::SystemData) {
+        for (renderable, _) in (&mut renderables, &sun_comps).join() {
+            renderable.position = sun.shadow_camera.position;
+        }
+    }
+}
+struct FrustrumSystem;
+impl<'a> System<'a> for FrustrumSystem {
+    type SystemData = (
+        ReadStorage<'a, FrustrumMarker>,
+        WriteStorage<'a, Renderable>,
+        Read<'a, OpenGlResource>,
+    );
+
+    fn run(&mut self, (frustrum_comps, mut renderable_comps, opengl): Self::SystemData) {
+        for (renderable, frustrum) in (&mut renderable_comps, &frustrum_comps).join() {
+            renderable.position = opengl.frustrum_corners[frustrum.i].xyz();
+        }
     }
 }
 
@@ -131,31 +176,18 @@ impl<'a> System<'a> for RenderSystem {
         Read<'a, App>,
         Read<'a, MeshMgrResource>,
         Read<'a, OpenGlResource>,
-        Read<'a, SunResource>,
+        Write<'a, SunResource>,
     );
 
     fn run(&mut self, (render_comps, app, mesh_mgr, open_gl, sun): Self::SystemData) {
         unsafe {
             gl::Viewport(0, 0, app.screen_width, app.screen_height);
+            gl::Enable(gl::CULL_FACE);
+            gl::CullFace(gl::BACK);
             gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
         }
 
         open_gl.program.set();
-        sun.depth_map.activate(gl::TEXTURE1);
-        sun.depth_map
-            .associate_uniform(open_gl.program.id(), 1, "shadow_map");
-
-        let u_model_matrix = Uniform::new(open_gl.program.id(), "light_mvp").unwrap();
-        let (view_matrix, proj_matrix) = sun.shadow_camera.gen_view_proj_matrices();
-        let light_space_mvp = proj_matrix * view_matrix;
-        unsafe {
-            gl::UniformMatrix4fv(
-                u_model_matrix.id,
-                1,
-                gl::FALSE,
-                &light_space_mvp.columns(0, 4)[0],
-            );
-        }
 
         for renderable in render_comps.join() {
             match renderable.render_dist {
@@ -171,6 +203,22 @@ impl<'a> System<'a> for RenderSystem {
             renderable
                 .texture
                 .associate_uniform(open_gl.program.id(), 0, "texture0");
+            sun.depth_map.activate(gl::TEXTURE1);
+            sun.depth_map
+                .associate_uniform(open_gl.program.id(), 1, "shadow_map");
+
+            let u_light_matrix = Uniform::new(open_gl.program.id(), "light_mvp").unwrap();
+            let model_matrix = Mesh::get_model_matrix(renderable.position, renderable.scale);
+            let (light_view_matrix, light_proj_matrix) = sun.shadow_camera.gen_view_proj_matrices();
+            let light_space_mvp = light_proj_matrix * light_view_matrix * model_matrix;
+            unsafe {
+                gl::UniformMatrix4fv(
+                    u_light_matrix.id,
+                    1,
+                    gl::FALSE,
+                    &light_space_mvp.columns(0, 4)[0],
+                );
+            }
             mesh.draw(
                 &open_gl.program,
                 &open_gl.camera,
@@ -185,25 +233,76 @@ struct ShadowSystem;
 impl<'a> System<'a> for ShadowSystem {
     type SystemData = (
         ReadStorage<'a, Renderable>,
+        ReadStorage<'a, CastsShadow>,
         Read<'a, MeshMgrResource>,
-        Read<'a, SunResource>,
-        WriteStorage<'a, CastsShadow>,
+        Write<'a, OpenGlResource>,
+        Write<'a, SunResource>,
     );
 
-    fn run(&mut self, (render_comps, mesh_mgr, sun, _): Self::SystemData) {
+    fn run(&mut self, (render_comps, shadow, mesh_mgr, mut open_gl, mut sun): Self::SystemData) {
         sun.fbo.bind();
         unsafe {
             gl::Viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
-            // gl::Enable(gl::CULL_FACE);
-            // gl::CullFace(gl::BACK);
+            gl::Disable(gl::CULL_FACE);
             gl::Clear(gl::DEPTH_BUFFER_BIT)
         }
 
         // Use a simple depth shader program
         sun.shadow_program.set();
 
+        // Compute the camera frustrum corners
+        let camera_frustrum_corners_world_space = open_gl.camera.compute_frustum_corners();
+        open_gl.frustrum_corners = camera_frustrum_corners_world_space;
+        // Transform the view frustrum corners to light-space (1st time)
+        sun.shadow_camera.position = sun.shadow_camera.lookat + sun.light_dir * 100.0;
+        sun.shadow_camera.lookat =
+            nalgebra_glm::vec3(MAP_SIZE as f32 * 0.5, MAP_SIZE as f32 * 0.5, 0.5 * SCALE);
+        let (light_view_matrix, _) = sun.shadow_camera.gen_view_proj_matrices();
+        let mut camera_frustrum_corners_light_space = [nalgebra_glm::vec4(0.0, 0.0, 0.0, 1.0); 8];
+        for (i, &corner) in camera_frustrum_corners_world_space.iter().enumerate() {
+            camera_frustrum_corners_light_space[i] = light_view_matrix * corner;
+        }
+        // Calculate an AABB for the view frustrum in light space
+        let mut min_light_space = nalgebra_glm::vec3(f32::MAX, f32::MAX, f32::MAX);
+        let mut max_light_space = nalgebra_glm::vec3(f32::MIN, f32::MIN, f32::MIN);
+        for &corner in camera_frustrum_corners_light_space.iter() {
+            min_light_space = nalgebra_glm::min2(&min_light_space, &corner.xyz());
+            max_light_space = nalgebra_glm::max2(&max_light_space, &corner.xyz());
+        }
+        // Calculate the mid-point of the near-plane on the light-frustrum
+        let bottom_left_light_space =
+            nalgebra_glm::vec4(min_light_space.x, min_light_space.y, max_light_space.z, 1.0);
+        let top_right_light_space =
+            nalgebra_glm::vec4(max_light_space.x, max_light_space.y, max_light_space.z, 1.0);
+        let light_pos_light_space = 0.5 * (bottom_left_light_space + top_right_light_space);
+        let light_pos_world_space =
+            (nalgebra_glm::inverse(&light_view_matrix)) * light_pos_light_space;
+        // Transform the view frustrum to light-space (2nd time)
+        sun.shadow_camera.position = light_pos_world_space.xyz();
+        sun.shadow_camera.lookat = sun.shadow_camera.position - sun.light_dir;
+        let (light_view_matrix, _) = sun.shadow_camera.gen_view_proj_matrices();
+        let mut camera_frustrum_corners_light_space = [nalgebra_glm::vec4(0.0, 0.0, 0.0, 1.0); 8];
+        for (i, &corner) in camera_frustrum_corners_world_space.iter().enumerate() {
+            camera_frustrum_corners_light_space[i] = light_view_matrix * corner;
+        }
+        // Create an Orthographic Projection (2nd time)
+        let mut min_light_space = nalgebra_glm::vec3(f32::MAX, f32::MAX, f32::MAX);
+        let mut max_light_space = nalgebra_glm::vec3(f32::MIN, f32::MIN, f32::MIN);
+        for &corner in camera_frustrum_corners_light_space.iter() {
+            min_light_space = nalgebra_glm::min2(&min_light_space, &corner.xyz());
+            max_light_space = nalgebra_glm::max2(&max_light_space, &corner.xyz());
+        }
+        sun.shadow_camera.projection_kind = ProjectionKind::Orthographic {
+            left: min_light_space.x,
+            right: max_light_space.x,
+            bottom: min_light_space.y,
+            top: max_light_space.y,
+            near: 0.01,
+            far: 5000.0,
+        };
+
         // Render the stuff that casts shadows
-        for renderable in render_comps.join() {
+        for (renderable, _) in (&render_comps, &shadow).join() {
             let mesh = mesh_mgr.data.get_mesh(renderable.mesh_id);
             mesh.draw(
                 &sun.shadow_program,
@@ -320,6 +419,7 @@ pub struct Island {
     world: World,
     update_dispatcher: Dispatcher<'static, 'static>,
     render_dispatcher: Dispatcher<'static, 'static>,
+    ui_render_dispatcher: Dispatcher<'static, 'static>,
 }
 
 impl Scene for Island {
@@ -330,6 +430,7 @@ impl Scene for Island {
 
     fn render(&mut self, _app: &App) {
         self.render_dispatcher.dispatch_seq(&mut self.world);
+        self.ui_render_dispatcher.dispatch_seq(&mut self.world);
     }
 }
 
@@ -339,6 +440,8 @@ impl Island {
         let mut world = World::new();
         world.register::<Renderable>();
         world.register::<CastsShadow>();
+        world.register::<TheActualSun>();
+        world.register::<FrustrumMarker>();
 
         // Setup the dispatchers
         let mut update_dispatcher_builder = DispatcherBuilder::new();
@@ -348,8 +451,12 @@ impl Island {
         let mut render_dispatcher_builder = DispatcherBuilder::new();
         render_dispatcher_builder.add(SkySystem, "sky system", &[]);
         render_dispatcher_builder.add(ShadowSystem, "shadow system", &[]);
+        render_dispatcher_builder.add(SunSystem, "sun system", &[]);
+        render_dispatcher_builder.add(FrustrumSystem, "frustrum system", &[]);
         render_dispatcher_builder.add(RenderSystem, "render system", &[]);
-        initialize_gui(&mut world, &mut render_dispatcher_builder);
+
+        let mut ui_render_dispatcher_builder = DispatcherBuilder::new();
+        initialize_gui(&mut world, &mut ui_render_dispatcher_builder);
 
         // Setup island map
         let mut rng = rand::thread_rng();
@@ -414,6 +521,29 @@ impl Island {
                 texture: Texture::from_png("res/water.png"),
                 render_dist: None,
             })
+            .with(CastsShadow {})
+            .build();
+        world
+            .create_entity()
+            .with(Renderable {
+                mesh_id: quad_mesh,
+                position: nalgebra_glm::vec3(0.0, 0.0, SCALE * 0.5),
+                scale: nalgebra_glm::vec3(1000.0, -1000.0, 1000.0),
+                texture: Texture::from_png("res/water.png"),
+                render_dist: None,
+            })
+            .with(CastsShadow {})
+            .build();
+        world
+            .create_entity()
+            .with(Renderable {
+                mesh_id: quad_mesh,
+                position: nalgebra_glm::vec3(0.0, 0.0, SCALE * -1.0 - 1.0),
+                scale: nalgebra_glm::vec3(1000.0, -1000.0, 1000.0),
+                texture: Texture::from_png("res/water.png"),
+                render_dist: None,
+            })
+            .with(CastsShadow {})
             .build();
         world
             .create_entity()
@@ -434,7 +564,31 @@ impl Island {
                 quad_mesh,
             ))
             .build();
-        for _ in 0..(MAP_SIZE) {
+        world
+            .create_entity()
+            .with(Renderable {
+                mesh_id: cube_mesh,
+                position: nalgebra_glm::vec3(0.0, 0.0, SCALE * 0.5),
+                scale: nalgebra_glm::vec3(0.1, 0.1, 0.1),
+                texture: Texture::from_png("res/water.png"),
+                render_dist: None,
+            })
+            .with(TheActualSun {})
+            .build();
+        // for i in 0..8 {
+        //     world
+        //         .create_entity()
+        //         .with(Renderable {
+        //             mesh_id: cube_mesh,
+        //             position: nalgebra_glm::vec3(0.0, 0.0, SCALE * 0.5),
+        //             scale: nalgebra_glm::vec3(0.01, 0.01, 0.01),
+        //             texture: Texture::from_png("res/tree.png"),
+        //             render_dist: None,
+        //         })
+        //         .with(FrustrumMarker { i })
+        //         .build();
+        // }
+        for _ in 0..(MAP_SIZE / 4) {
             // Add all the trees
             let mut attempts = 0;
             loop {
@@ -513,13 +667,21 @@ impl Island {
                 include_str!("../shaders/3d.frag"),
             )
             .unwrap(),
+            frustrum_corners: [nalgebra_glm::vec4(0.0, 0.0, 0.0, 1.0); 8],
         });
         world.insert(UIResource {
             camera: Camera::new(
                 nalgebra_glm::vec3(0.0, 0.0, 1.0),
                 nalgebra_glm::vec3(0.0, 0.0, 0.0),
                 nalgebra_glm::vec3(0.0, 1.0, 0.0),
-                ProjectionKind::Orthographic { scale: 1.0 },
+                ProjectionKind::Orthographic {
+                    left: -1.0,
+                    right: 1.0,
+                    bottom: -1.0,
+                    top: 1.0,
+                    near: 0.01,
+                    far: 10.0,
+                },
             ),
             program: create_program(
                 include_str!("../shaders/2d.vert"),
@@ -534,13 +696,20 @@ impl Island {
             pitch: 0.0,
         });
         world.insert(TileResource { tiles: map });
-
+        let sun_scale = 30.0;
         world.insert(SunResource {
             shadow_camera: Camera::new(
                 nalgebra_glm::vec3(MAP_SIZE as f32 / -2.0, 0.0, SCALE * 2.0),
                 nalgebra_glm::vec3(MAP_SIZE as f32 / 2.0, MAP_SIZE as f32 / 2.0, SCALE * 0.5),
                 nalgebra_glm::vec3(0.0, 0.0, 1.0),
-                ProjectionKind::Orthographic { scale: -30.0 },
+                ProjectionKind::Orthographic {
+                    left: -sun_scale,
+                    right: sun_scale,
+                    bottom: -sun_scale,
+                    top: sun_scale,
+                    near: 0.01,
+                    far: 5000.0,
+                },
             ),
             shadow_program: create_program(
                 include_str!("../shaders/shadow.vert"),
@@ -549,12 +718,14 @@ impl Island {
             .unwrap(),
             fbo,
             depth_map,
+            light_dir: nalgebra_glm::vec3(0.0, 0.0, 1.0),
         });
 
         Self {
             world,
             update_dispatcher: update_dispatcher_builder.build(),
             render_dispatcher: render_dispatcher_builder.build(),
+            ui_render_dispatcher: ui_render_dispatcher_builder.build(),
         }
     }
 }

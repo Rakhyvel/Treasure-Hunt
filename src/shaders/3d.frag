@@ -20,17 +20,10 @@ float calc_shadow_factor()
     float z = 0.5 * proj_coords.z + 0.5;
     float depth = texture(shadow_map, uv_coords).x;
 
-    float bias = 0.0025;
-    if (depth + bias < z)
-        return 0.2;
-    else if (depth + bias - 0.0005 < z)
-        return 0.4;
-    else if (depth + bias - 0.001 < z)
-        return 0.6;
-    else if (depth + bias - 0.0015 < z)
-        return 0.8;
-    else
-        return 1.0;
+    float bias = 0.0002;
+    float off_bias = 0.0001;
+    float lol = ((depth + bias) - z) / off_bias;
+    return clamp(lol, 0.0, 1.0);
 }
 
 void main()

@@ -11,7 +11,7 @@ out vec4 Color;
 uniform sampler2D texture0;
 uniform sampler2D shadow_map;
 
-float calc_shadow_factor()
+float calc_shadow_factor(float cosTheta)
 {
     vec3 proj_coords = light_space_pos.xyz / light_space_pos.w;
     vec2 uv_coords;
@@ -20,10 +20,13 @@ float calc_shadow_factor()
     float z = 0.5 * proj_coords.z + 0.5;
     float depth = texture(shadow_map, uv_coords).x;
 
-    float bias = 0.0002;
-    float off_bias = 0.0001;
-    float lol = ((depth + bias) - z) / off_bias;
-    return clamp(lol, 0.0, 1.0);
+    float baseBias = 0.00006;
+    float bias = baseBias * max(1.0 - cosTheta, 0.0);
+    if (depth + bias < z) {
+        return 0.2;
+    } else {
+        return 1.0;
+    }
 }
 
 void main()
@@ -43,7 +46,7 @@ void main()
     float cosTheta = clamp(dot(n, l), 0, 1);
     float cosTheta2 = 0.01 * clamp(dot(n, vec3(1.0, 1.0, 1.0)), 0, 1);
 
-    float shadow_factor = calc_shadow_factor();
+    float shadow_factor = calc_shadow_factor(cosTheta);
 
     Color = vec4(0.2 * ambient_color * material_color + shadow_factor * material_color * LightColor * cosTheta, texture_alpha);
 }

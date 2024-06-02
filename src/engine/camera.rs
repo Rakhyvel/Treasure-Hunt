@@ -64,31 +64,4 @@ impl Camera {
         let proj_view = proj * view;
         nalgebra_glm::inverse(&proj_view)
     }
-
-    pub fn compute_frustum_corners(&self) -> [nalgebra_glm::Vec4; 8] {
-        let inv_proj_view = self.inv_proj_view();
-        let mut frustum_corners = [nalgebra_glm::Vec4::zeros(); 8];
-
-        let (near, far) = (0.5, 0.999);
-
-        let ndc_corners = [
-            nalgebra_glm::vec4(-1.0, -1.0, near, 1.0), // near bottom left
-            nalgebra_glm::vec4(1.0, -1.0, near, 1.0),  // near bottom right
-            nalgebra_glm::vec4(1.0, 1.0, near, 1.0),   // near top right
-            nalgebra_glm::vec4(-1.0, 1.0, near, 1.0),  // near top left
-            //
-            nalgebra_glm::vec4(-1.0, -1.0, far, 1.0), // far bottom left
-            nalgebra_glm::vec4(1.0, -1.0, far, 1.0),  // far bottom right
-            nalgebra_glm::vec4(1.0, 1.0, far, 1.0),   // far top right
-            nalgebra_glm::vec4(-1.0, 1.0, far, 1.0),  // far top left
-        ];
-
-        for (i, &ndc_corner) in ndc_corners.iter().enumerate() {
-            let clip_space_corner = inv_proj_view * ndc_corner;
-            // Handle the case where w is 0 to avoid NaNs
-            frustum_corners[i] = clip_space_corner / clip_space_corner.w;
-        }
-
-        frustum_corners
-    }
 }

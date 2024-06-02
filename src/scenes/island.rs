@@ -7,7 +7,9 @@ use specs::{prelude::*, Component, Join, ReadStorage};
 
 use crate::{
     engine::{
+        aabb::AABB,
         camera::{Camera, ProjectionKind},
+        frustrum::Frustrum,
         mesh::{Mesh, MeshMgr, MeshMgrResource},
         objects::{create_program, Fbo, Program, Texture, Uniform},
         perlin::*,
@@ -17,9 +19,9 @@ use crate::{
 };
 
 const MAP_SIZE: usize = 100;
-const SCALE: f32 = MAP_SIZE as f32 / 64.0;
+const SCALE: f32 = MAP_SIZE as f32 / 128.0;
 const UNIT_PER_METER: f32 = 0.2;
-const PERSON_HEIGHT: f32 = 10.6764 * UNIT_PER_METER;
+const PERSON_HEIGHT: f32 = 1.6764 * UNIT_PER_METER;
 const SHADOW_SIZE: i32 = 500;
 
 pub const QUAD_DATA: &[u8] = include_bytes!("../../res/quad.obj");
@@ -39,7 +41,6 @@ pub struct OpenGlResource {
     // TODO: Put in engine I think
     pub camera: Camera,
     pub program: Program,
-    frustrum_corners: [nalgebra_glm::Vec4; 8],
 }
 
 #[derive(Default)]
@@ -95,14 +96,6 @@ impl Component for TheActualSun {
     type Storage = NullStorage<Self>;
 }
 
-#[derive(Default)]
-struct FrustrumMarker {
-    i: usize,
-}
-impl Component for FrustrumMarker {
-    type Storage = HashMapStorage<Self>;
-}
-
 /*
  * SYSTEMS
  */
@@ -115,7 +108,7 @@ impl<'a> System<'a> for SkySystem {
         Write<'a, SunResource>,
     );
     fn run(&mut self, (app, open_gl, tick_res, mut sun): Self::SystemData) {
-        let model_t = tick_res.t * 0.001 + 0.3;
+        let model_t = tick_res.t * 0.0001745 + 0.3;
         unsafe {
             let day_color = nalgebra_glm::vec3(172.0, 205.0, 248.0);
             let night_color = nalgebra_glm::vec3(5.0, 6.0, 7.0);
@@ -151,20 +144,6 @@ impl<'a> System<'a> for SunSystem {
     fn run(&mut self, (sun_comps, mut renderables, sun): Self::SystemData) {
         for (renderable, _) in (&mut renderables, &sun_comps).join() {
             renderable.position = sun.shadow_camera.position;
-        }
-    }
-}
-struct FrustrumSystem;
-impl<'a> System<'a> for FrustrumSystem {
-    type SystemData = (
-        ReadStorage<'a, FrustrumMarker>,
-        WriteStorage<'a, Renderable>,
-        Read<'a, OpenGlResource>,
-    );
-
-    fn run(&mut self, (frustrum_comps, mut renderable_comps, opengl): Self::SystemData) {
-        for (renderable, frustrum) in (&mut renderable_comps, &frustrum_comps).join() {
-            renderable.position = opengl.frustrum_corners[frustrum.i].xyz();
         }
     }
 }
@@ -235,11 +214,11 @@ impl<'a> System<'a> for ShadowSystem {
         ReadStorage<'a, Renderable>,
         ReadStorage<'a, CastsShadow>,
         Read<'a, MeshMgrResource>,
-        Write<'a, OpenGlResource>,
+        Read<'a, OpenGlResource>,
         Write<'a, SunResource>,
     );
 
-    fn run(&mut self, (render_comps, shadow, mesh_mgr, mut open_gl, mut sun): Self::SystemData) {
+    fn run(&mut self, (render_comps, shadow, mesh_mgr, open_gl, mut sun): Self::SystemData) {
         sun.fbo.bind();
         unsafe {
             gl::Viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
@@ -251,53 +230,56 @@ impl<'a> System<'a> for ShadowSystem {
         sun.shadow_program.set();
 
         // Compute the camera frustrum corners
-        let camera_frustrum_corners_world_space = open_gl.camera.compute_frustum_corners();
-        open_gl.frustrum_corners = camera_frustrum_corners_world_space;
+        let mut frustrum = Frustrum::new(0.0, 0.99);
+        frustrum.transform_points(open_gl.camera.inv_proj_view());
+        let mut frustrum_2 = frustrum.clone();
+
         // Transform the view frustrum corners to light-space (1st time)
         sun.shadow_camera.position = nalgebra_glm::zero();
         sun.shadow_camera.lookat = sun.shadow_camera.position - sun.light_dir;
         let (light_view_matrix, _) = sun.shadow_camera.gen_view_proj_matrices();
-        let mut camera_frustrum_corners_light_space = [nalgebra_glm::vec4(0.0, 0.0, 0.0, 1.0); 8];
-        for (i, &corner) in camera_frustrum_corners_world_space.iter().enumerate() {
-            camera_frustrum_corners_light_space[i] = light_view_matrix * corner;
-        }
+        frustrum.transform_points(light_view_matrix);
+
         // Calculate an AABB for the view frustrum in light space
-        let mut min_light_space = nalgebra_glm::vec3(f32::MAX, f32::MAX, f32::MAX);
-        let mut max_light_space = nalgebra_glm::vec3(f32::MIN, f32::MIN, f32::MIN);
-        for &corner in camera_frustrum_corners_light_space.iter() {
-            min_light_space = nalgebra_glm::min2(&min_light_space, &corner.xyz());
-            max_light_space = nalgebra_glm::max2(&max_light_space, &corner.xyz());
-        }
+        let mut aabb_light_space = AABB::new();
+        aabb_light_space.expand_to_fit(frustrum.points);
+
+        // Calculate an AABB for the world, in light space
+        let mut world_aabb_light_space = AABB::new();
+        world_aabb_light_space.expand_to_fit([
+            nalgebra_glm::vec3(0.0, 0.0, 0.0),
+            nalgebra_glm::vec3(MAP_SIZE as f32, 0.0, 0.0),
+            nalgebra_glm::vec3(0.0, MAP_SIZE as f32, 0.0),
+            nalgebra_glm::vec3(MAP_SIZE as f32, MAP_SIZE as f32, 0.0),
+            nalgebra_glm::vec3(0.0, 0.0, SCALE),
+            nalgebra_glm::vec3(MAP_SIZE as f32, 0.0, SCALE),
+            nalgebra_glm::vec3(0.0, MAP_SIZE as f32, SCALE),
+            nalgebra_glm::vec3(MAP_SIZE as f32, MAP_SIZE as f32, SCALE),
+        ]);
+        world_aabb_light_space.transform(light_view_matrix);
+        aabb_light_space.intersect_z(world_aabb_light_space);
+
         // Calculate the mid-point of the near-plane on the light-frustrum
-        let bottom_left_light_space =
-            nalgebra_glm::vec4(min_light_space.x, min_light_space.y, max_light_space.z, 1.0);
-        let top_right_light_space =
-            nalgebra_glm::vec4(max_light_space.x, max_light_space.y, max_light_space.z, 1.0);
-        let light_pos_light_space = 0.5 * (bottom_left_light_space + top_right_light_space);
+        let light_pos_light_space = aabb_light_space.pos_z_plane_midpoint();
         let light_pos_world_space =
             (nalgebra_glm::inverse(&light_view_matrix)) * light_pos_light_space;
+
         // Transform the view frustrum to light-space (2nd time)
         sun.shadow_camera.position = light_pos_world_space.xyz();
         sun.shadow_camera.lookat = sun.shadow_camera.position - sun.light_dir;
         let (light_view_matrix, _) = sun.shadow_camera.gen_view_proj_matrices();
-        let mut camera_frustrum_corners_light_space = [nalgebra_glm::vec4(0.0, 0.0, 0.0, 1.0); 8];
-        for (i, &corner) in camera_frustrum_corners_world_space.iter().enumerate() {
-            camera_frustrum_corners_light_space[i] = light_view_matrix * corner;
-        }
+        frustrum_2.transform_points(light_view_matrix);
+
         // Create an Orthographic Projection (2nd time)
-        let mut min_light_space = nalgebra_glm::vec3(f32::MAX, f32::MAX, f32::MAX);
-        let mut max_light_space = nalgebra_glm::vec3(f32::MIN, f32::MIN, f32::MIN);
-        for &corner in camera_frustrum_corners_light_space.iter() {
-            min_light_space = nalgebra_glm::min2(&min_light_space, &corner.xyz());
-            max_light_space = nalgebra_glm::max2(&max_light_space, &corner.xyz());
-        }
+        let mut aabb_light_space = AABB::new();
+        aabb_light_space.expand_to_fit(frustrum_2.points);
         sun.shadow_camera.projection_kind = ProjectionKind::Orthographic {
-            left: min_light_space.x,
-            right: max_light_space.x,
-            bottom: min_light_space.y,
-            top: max_light_space.y,
-            near: min_light_space.z,
-            far: 5000.0,
+            left: aabb_light_space.min.x,
+            right: aabb_light_space.max.x,
+            bottom: aabb_light_space.min.y,
+            top: aabb_light_space.max.y,
+            near: aabb_light_space.min.z,
+            far: 500.0,
         };
 
         // Render the stuff that casts shadows
@@ -440,7 +422,6 @@ impl Island {
         world.register::<Renderable>();
         world.register::<CastsShadow>();
         world.register::<TheActualSun>();
-        world.register::<FrustrumMarker>();
 
         // Setup the dispatchers
         let mut update_dispatcher_builder = DispatcherBuilder::new();
@@ -451,7 +432,6 @@ impl Island {
         render_dispatcher_builder.add(SkySystem, "sky system", &[]);
         render_dispatcher_builder.add(ShadowSystem, "shadow system", &[]);
         render_dispatcher_builder.add(SunSystem, "sun system", &[]);
-        render_dispatcher_builder.add(FrustrumSystem, "frustrum system", &[]);
         render_dispatcher_builder.add(RenderSystem, "render system", &[]);
 
         let mut ui_render_dispatcher_builder = DispatcherBuilder::new();
@@ -462,18 +442,8 @@ impl Island {
         let mut map = generate(MAP_SIZE, 0.1, rng.gen());
         create_bulge(&mut map);
         erosion(&mut map, MAP_SIZE, 51.0);
-        let mut spawn_point = nalgebra_glm::vec3((MAP_SIZE / 2) as f32, (MAP_SIZE / 2) as f32, 1.0);
-        for x in (MAP_SIZE / 2)..MAP_SIZE {
-            let height = get_z_scaled_interpolated(&map, x as f32, MAP_SIZE as f32 / 2.0);
-            if height < SCALE / 2.0 {
-                spawn_point = nalgebra_glm::vec3(
-                    x as f32 - 1.0,
-                    MAP_SIZE as f32 / 2.0,
-                    height + PERSON_HEIGHT,
-                );
-                break;
-            }
-        }
+        let spawn_point =
+            nalgebra_glm::vec3((MAP_SIZE / 2) as f32, (MAP_SIZE / 2) as f32, 2.0 * SCALE);
 
         // Setup the font manager
         let font_mgr = FontMgr::new();
@@ -574,19 +544,6 @@ impl Island {
             })
             .with(TheActualSun {})
             .build();
-        // for i in 0..8 {
-        //     world
-        //         .create_entity()
-        //         .with(Renderable {
-        //             mesh_id: cube_mesh,
-        //             position: nalgebra_glm::vec3(0.0, 0.0, SCALE * 0.5),
-        //             scale: nalgebra_glm::vec3(0.01, 0.01, 0.01),
-        //             texture: Texture::from_png("res/tree.png"),
-        //             render_dist: None,
-        //         })
-        //         .with(FrustrumMarker { i })
-        //         .build();
-        // }
         for _ in 0..(MAP_SIZE / 4) {
             // Add all the trees
             let mut attempts = 0;
@@ -666,7 +623,6 @@ impl Island {
                 include_str!("../shaders/3d.frag"),
             )
             .unwrap(),
-            frustrum_corners: [nalgebra_glm::vec4(0.0, 0.0, 0.0, 1.0); 8],
         });
         world.insert(UIResource {
             camera: Camera::new(

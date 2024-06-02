@@ -12,7 +12,7 @@ use scenes::island::Island;
 // x Trees
 // x Text
 // x ecs
-// - Maps & Treasure
+// x Maps & Treasure
 // - Hidden powerups (faster boots, swim floaties, shovel)
 // - Enemy mobs
 // - Health bar, weapons

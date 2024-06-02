@@ -18,11 +18,11 @@ use crate::{
     App, Scene,
 };
 
-const MAP_SIZE: usize = 400;
+const MAP_SIZE: usize = 256;
 const SCALE: f32 = MAP_SIZE as f32 / 64.0;
 const UNIT_PER_METER: f32 = 0.2;
 const PERSON_HEIGHT: f32 = 1.6764 * UNIT_PER_METER;
-const SHADOW_SIZE: i32 = 5000;
+const SHADOW_SIZE: i32 = 2048;
 
 pub const QUAD_DATA: &[u8] = include_bytes!("../../res/quad.obj");
 pub const CONE_DATA: &[u8] = include_bytes!("../../res/cone.obj");
@@ -90,10 +90,10 @@ impl Component for CastsShadow {
     type Storage = NullStorage<Self>;
 }
 
-#[derive(Default)]
-struct TheActualSun;
-impl Component for TheActualSun {
-    type Storage = NullStorage<Self>;
+#[derive(Component)]
+#[storage(VecStorage)]
+struct TreasureMap {
+    treasure_entity: Entity,
 }
 
 /*
@@ -108,7 +108,13 @@ impl<'a> System<'a> for SkySystem {
         Write<'a, SunResource>,
     );
     fn run(&mut self, (app, open_gl, tick_res, mut sun): Self::SystemData) {
-        let model_t = tick_res.t * 0.001745 + 0.3;
+        const MIN_PER_DAY: f32 = 60.0;
+        // Noon:     0.0
+        // Evening:  1.57
+        // Midnight: 3.14
+        // Morning:  4.71
+        // Noon2:    6.28
+        let model_t = tick_res.t / (MIN_PER_DAY * 60.0 * 62.6) + 5.3;
         unsafe {
             let day_color = nalgebra_glm::vec3(172.0, 205.0, 248.0);
             let night_color = nalgebra_glm::vec3(5.0, 6.0, 7.0);
@@ -130,21 +136,6 @@ impl<'a> System<'a> for SkySystem {
         );
 
         sun.light_dir = nalgebra_glm::vec3(0.0, model_t.sin(), model_t.cos());
-    }
-}
-
-struct SunSystem;
-impl<'a> System<'a> for SunSystem {
-    type SystemData = (
-        ReadStorage<'a, TheActualSun>,
-        WriteStorage<'a, Renderable>,
-        Read<'a, SunResource>,
-    );
-
-    fn run(&mut self, (sun_comps, mut renderables, sun): Self::SystemData) {
-        for (renderable, _) in (&mut renderables, &sun_comps).join() {
-            renderable.position = sun.shadow_camera.position;
-        }
     }
 }
 
@@ -280,7 +271,7 @@ impl<'a> System<'a> for ShadowSystem {
             bottom: aabb_light_space.min.y,
             top: aabb_light_space.max.y,
             near: aabb_light_space.min.z,
-            far: 200.0,
+            far: 800.0,
         };
 
         // Render the stuff that casts shadows
@@ -394,6 +385,38 @@ impl<'a> System<'a> for TickSystem {
     }
 }
 
+struct TreasureSystem;
+impl<'a> System<'a> for TreasureSystem {
+    type SystemData = (
+        ReadStorage<'a, TreasureMap>,
+        WriteStorage<'a, Quad>,
+        ReadStorage<'a, Renderable>,
+        Read<'a, OpenGlResource>,
+        Read<'a, PlayerResource>,
+    );
+
+    fn run(&mut self, (treasure_maps, mut quads, renderables, opengl, player): Self::SystemData) {
+        for (treasure_map, quad) in (&treasure_maps, &mut quads).join() {
+            // Get the corresponding treasure entity
+            let treasure_entity = treasure_map.treasure_entity;
+
+            // Access components of the treasure entity
+            if let Some(treasure_renderable) = renderables.get(treasure_entity) {
+                if nalgebra_glm::length(&player.vel.xy()) < 0.01 {
+                    quad.opacity = 0.2;
+                    continue;
+                }
+                let player_moving_dir = player.vel.xy().normalize();
+                let to_treasure_dir = (opengl.camera.position - treasure_renderable.position)
+                    .xy()
+                    .normalize();
+
+                quad.opacity = (1.0 - player_moving_dir.dot(&to_treasure_dir)).clamp(0.2, 1.0);
+            }
+        }
+    }
+}
+
 /*
  * SCENE STUFF
  */
@@ -422,17 +445,17 @@ impl Island {
         let mut world = World::new();
         world.register::<Renderable>();
         world.register::<CastsShadow>();
-        world.register::<TheActualSun>();
+        world.register::<TreasureMap>();
 
         // Setup the dispatchers
         let mut update_dispatcher_builder = DispatcherBuilder::new();
         update_dispatcher_builder.add(PlayerSystem, "player system", &[]);
         update_dispatcher_builder.add(TickSystem, "tick system", &[]);
+        update_dispatcher_builder.add(TreasureSystem, "treasure system", &[]);
 
         let mut render_dispatcher_builder = DispatcherBuilder::new();
         render_dispatcher_builder.add(SkySystem, "sky system", &[]);
         render_dispatcher_builder.add(ShadowSystem, "shadow system", &[]);
-        render_dispatcher_builder.add(SunSystem, "sun system", &[]);
         render_dispatcher_builder.add(RenderSystem, "render system", &[]);
 
         let mut ui_render_dispatcher_builder = DispatcherBuilder::new();
@@ -491,29 +514,6 @@ impl Island {
                 texture: Texture::from_png("res/water.png"),
                 render_dist: None,
             })
-            .with(CastsShadow {})
-            .build();
-        world
-            .create_entity()
-            .with(Renderable {
-                mesh_id: quad_mesh,
-                position: nalgebra_glm::vec3(0.0, 0.0, SCALE * 0.5),
-                scale: nalgebra_glm::vec3(1000.0, -1000.0, 1000.0),
-                texture: Texture::from_png("res/water.png"),
-                render_dist: None,
-            })
-            .with(CastsShadow {})
-            .build();
-        world
-            .create_entity()
-            .with(Renderable {
-                mesh_id: quad_mesh,
-                position: nalgebra_glm::vec3(0.0, 0.0, SCALE * -1.0 - 1.0),
-                scale: nalgebra_glm::vec3(1000.0, -1000.0, 1000.0),
-                texture: Texture::from_png("res/water.png"),
-                render_dist: None,
-            })
-            .with(CastsShadow {})
             .build();
         world
             .create_entity()
@@ -523,27 +523,6 @@ impl Island {
                 Color::RGBA(255, 255, 255, 255),
                 quad_mesh,
             ))
-            .build();
-        world
-            .create_entity()
-            .with(Quad::from_texture(
-                depth_map.clone(),
-                nalgebra_glm::vec3(-0.68, -0.57, 0.0),
-                256,
-                256,
-                quad_mesh,
-            ))
-            .build();
-        world
-            .create_entity()
-            .with(Renderable {
-                mesh_id: cube_mesh,
-                position: nalgebra_glm::vec3(0.0, 0.0, SCALE * 0.5),
-                scale: nalgebra_glm::vec3(0.1, 0.1, 0.1),
-                texture: Texture::from_png("res/water.png"),
-                render_dist: None,
-            })
-            .with(TheActualSun {})
             .build();
         for _ in 0..(MAP_SIZE / 4) {
             // Add all the trees
@@ -575,7 +554,8 @@ impl Island {
                 attempts += 1;
             }
         }
-        for _ in 0..(MAP_SIZE / 85) {
+        const NUM_TREASURE: usize = MAP_SIZE / 51;
+        for i in 0..NUM_TREASURE {
             // Add all the treasure boxes
             let mut attempts = 0;
             loop {
@@ -589,16 +569,33 @@ impl Island {
                     && height <= 0.8 * SCALE
                     && height / SCALE < 0.75 * dot_prod
                 {
-                    world
+                    // Add treasure
+                    let treasure_entity = world
                         .create_entity()
                         .with(Renderable {
                             mesh_id: cube_mesh,
                             position: nalgebra_glm::vec3(x, y, height),
-                            scale: nalgebra_glm::vec3(0.1, 0.1, 3.1),
+                            scale: nalgebra_glm::vec3(0.1, 0.1, 0.1),
                             texture: Texture::from_png("res/tree.png"),
                             render_dist: Some(128.0),
                         })
                         .with(CastsShadow {})
+                        .build();
+                    // Add corresponding map
+                    world
+                        .create_entity()
+                        .with(Quad::from_texture(
+                            Texture::from_png("res/map.png"),
+                            nalgebra_glm::vec3(
+                                (i as f32) / (NUM_TREASURE as f32 - 1.0) - 0.5,
+                                0.9,
+                                0.0,
+                            ),
+                            32,
+                            32,
+                            quad_mesh,
+                        ))
+                        .with(TreasureMap { treasure_entity })
                         .build();
                     break;
                 }

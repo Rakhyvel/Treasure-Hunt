@@ -9,7 +9,10 @@ use specs::{Component, DispatcherBuilder, VecStorage, World};
 
 use crate::{scenes::island::UIResource, App};
 
-use super::{mesh::MeshMgrResource, objects::Texture};
+use super::{
+    mesh::MeshMgrResource,
+    objects::{Texture, Uniform},
+};
 
 pub struct FontMgr {
     ttf_context: Sdl2TtfContext,
@@ -29,11 +32,12 @@ impl FontMgr {
 }
 
 pub struct Quad {
-    mesh_id: usize,
-    position: nalgebra_glm::Vec3,
-    width: i32,
-    height: i32,
-    texture: Texture,
+    pub mesh_id: usize,
+    pub position: nalgebra_glm::Vec3,
+    pub width: i32,
+    pub height: i32,
+    pub opacity: f32,
+    pub texture: Texture,
 }
 
 impl Quad {
@@ -49,6 +53,7 @@ impl Quad {
             position,
             width,
             height,
+            opacity: 1.0,
             texture,
         }
     }
@@ -70,6 +75,7 @@ impl Quad {
             position: nalgebra_glm::vec3(0.0, 0.0, 0.0),
             width: width as i32,
             height: height as i32,
+            opacity: 1.0,
             texture,
         }
     }
@@ -88,20 +94,22 @@ impl<'a> System<'a> for QuadSystem {
         Read<'a, UIResource>,
     );
 
-    fn run(&mut self, (text_components, mesh_mgr, app, open_gl): Self::SystemData) {
-        for text in text_components.join() {
-            let mesh = mesh_mgr.data.get_mesh(text.mesh_id);
+    fn run(&mut self, (quads, mesh_mgr, app, open_gl): Self::SystemData) {
+        for quad in quads.join() {
+            let mesh = mesh_mgr.data.get_mesh(quad.mesh_id);
             open_gl.program.set();
-            text.texture.activate(gl::TEXTURE0);
-            text.texture
+            quad.texture.activate(gl::TEXTURE0);
+            quad.texture
                 .associate_uniform(open_gl.program.id(), 0, "texture0");
+            let u_opacity = Uniform::new(open_gl.program.id(), "u_opacity").unwrap();
+            unsafe { gl::Uniform1f(u_opacity.id, quad.opacity) }
             mesh.draw(
                 &open_gl.program,
                 &open_gl.camera,
-                text.position,
+                quad.position,
                 nalgebra_glm::vec3(
-                    (text.width as f32) / (app.screen_width as f32),
-                    (text.height as f32) / (app.screen_height as f32),
+                    (quad.width as f32) / (app.screen_width as f32),
+                    (quad.height as f32) / (app.screen_height as f32),
                     1.0,
                 ),
             );

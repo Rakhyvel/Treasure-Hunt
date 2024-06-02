@@ -29,7 +29,7 @@ impl AABB {
         self.max = (matrix * nalgebra_glm::vec4(self.max.x, self.max.y, self.max.z, 1.0)).xyz();
     }
 
-    pub fn intersect_z(&mut self, other: AABB) {
+    pub fn intersect_z(&mut self, other: &AABB) {
         self.min.z = self.min.z.min(other.min.z);
         self.max.z = self.max.z.max(other.max.z);
     }

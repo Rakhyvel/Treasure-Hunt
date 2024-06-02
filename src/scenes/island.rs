@@ -18,11 +18,11 @@ use crate::{
     App, Scene,
 };
 
-const MAP_SIZE: usize = 100;
-const SCALE: f32 = MAP_SIZE as f32 / 128.0;
+const MAP_SIZE: usize = 400;
+const SCALE: f32 = MAP_SIZE as f32 / 64.0;
 const UNIT_PER_METER: f32 = 0.2;
 const PERSON_HEIGHT: f32 = 1.6764 * UNIT_PER_METER;
-const SHADOW_SIZE: i32 = 500;
+const SHADOW_SIZE: i32 = 5000;
 
 pub const QUAD_DATA: &[u8] = include_bytes!("../../res/quad.obj");
 pub const CONE_DATA: &[u8] = include_bytes!("../../res/cone.obj");
@@ -108,7 +108,7 @@ impl<'a> System<'a> for SkySystem {
         Write<'a, SunResource>,
     );
     fn run(&mut self, (app, open_gl, tick_res, mut sun): Self::SystemData) {
-        let model_t = tick_res.t * 0.0001745 + 0.3;
+        let model_t = tick_res.t * 0.001745 + 0.3;
         unsafe {
             let day_color = nalgebra_glm::vec3(172.0, 205.0, 248.0);
             let night_color = nalgebra_glm::vec3(5.0, 6.0, 7.0);
@@ -222,7 +222,8 @@ impl<'a> System<'a> for ShadowSystem {
         sun.fbo.bind();
         unsafe {
             gl::Viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
-            gl::Disable(gl::CULL_FACE);
+            gl::Enable(gl::CULL_FACE);
+            gl::CullFace(gl::FRONT);
             gl::Clear(gl::DEPTH_BUFFER_BIT)
         }
 
@@ -230,7 +231,7 @@ impl<'a> System<'a> for ShadowSystem {
         sun.shadow_program.set();
 
         // Compute the camera frustrum corners
-        let mut frustrum = Frustrum::new(0.0, 0.99);
+        let mut frustrum = Frustrum::new(0.0, 0.999);
         frustrum.transform_points(open_gl.camera.inv_proj_view());
         let mut frustrum_2 = frustrum.clone();
 
@@ -257,7 +258,7 @@ impl<'a> System<'a> for ShadowSystem {
             nalgebra_glm::vec3(MAP_SIZE as f32, MAP_SIZE as f32, SCALE),
         ]);
         world_aabb_light_space.transform(light_view_matrix);
-        aabb_light_space.intersect_z(world_aabb_light_space);
+        aabb_light_space.intersect_z(&world_aabb_light_space);
 
         // Calculate the mid-point of the near-plane on the light-frustrum
         let light_pos_light_space = aabb_light_space.pos_z_plane_midpoint();
@@ -279,7 +280,7 @@ impl<'a> System<'a> for ShadowSystem {
             bottom: aabb_light_space.min.y,
             top: aabb_light_space.max.y,
             near: aabb_light_space.min.z,
-            far: 500.0,
+            far: 200.0,
         };
 
         // Render the stuff that casts shadows

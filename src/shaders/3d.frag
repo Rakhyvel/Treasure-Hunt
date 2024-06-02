@@ -20,10 +20,10 @@ float calc_shadow_factor(float cosTheta)
     float z = 0.5 * proj_coords.z + 0.5;
     float depth = texture(shadow_map, uv_coords).x;
 
-    float baseBias = 0.00006;
-    float bias = baseBias * max(1.0 - cosTheta, 0.0);
+    float baseBias = 0.00008;
+    float bias = 0.00008;//baseBias * max(1.0 - cosTheta, 0.0);
     if (depth + bias < z) {
-        return 0.2;
+        return 0.0;
     } else {
         return 1.0;
     }
@@ -37,6 +37,9 @@ void main()
     vec3 ambient_color = vec3(0.9, 0.9, 1.0);
 
     vec3 LightColor = vec3(1.0, 1.0, 1.0);
+    if (LightDirection_cameraspace.z < 0.0) {
+        LightColor = vec3(0.0, 0.0, 0.0);
+    }
 
     // Normal of the computed fragment, in camera space
 	vec3 n = normalize( Normal_cameraspace );

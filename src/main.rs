@@ -13,7 +13,6 @@ use scenes::island::Island;
 // x Text
 // x ecs
 // x Maps & Treasure
-// - Hidden powerups (faster boots, swim floaties, shovel)
 // - Enemy mobs
 // - Health bar, weapons
 // - Menu

@@ -1,3 +1,4 @@
+#[derive(Debug)]
 pub struct AABB {
     pub min: nalgebra_glm::Vec3,
     pub max: nalgebra_glm::Vec3,
@@ -8,6 +9,17 @@ impl AABB {
         Self {
             min: nalgebra_glm::vec3(f32::MAX, f32::MAX, f32::MAX),
             max: nalgebra_glm::vec3(f32::MIN, f32::MIN, f32::MIN),
+        }
+    }
+
+    pub fn from_min_max(min: nalgebra_glm::Vec3, max: nalgebra_glm::Vec3) -> Self {
+        Self { min, max }
+    }
+
+    pub fn translate(&self, center: nalgebra_glm::Vec3) -> Self {
+        Self {
+            min: self.min + center,
+            max: self.max + center,
         }
     }
 
@@ -32,5 +44,23 @@ impl AABB {
     pub fn intersect_z(&mut self, other: &AABB) {
         self.min.z = self.min.z.min(other.min.z);
         self.max.z = self.max.z.max(other.max.z);
+    }
+
+    pub fn intersects(&self, other: &AABB) -> bool {
+        // Check for separation in the x-axis
+        if self.max.x < other.min.x || self.min.x > other.max.x {
+            return false;
+        }
+        // Check for separation in the y-axis
+        if self.max.y < other.min.y || self.min.y > other.max.y {
+            return false;
+        }
+        // Check for separation in the z-axis
+        if self.max.z < other.min.z || self.min.z > other.max.z {
+            return false;
+        }
+
+        // No separation found, the AABBs intersect
+        true
     }
 }

@@ -13,9 +13,11 @@ use scenes::island::Island;
 // x Text
 // x ecs
 // x Maps & Treasure
-// - Enemy mobs
-// - Health bar, weapons
-// - Menu
+// x Enemy mobs
+// - Health bar, health system
+// - Actual treasure chest mesh
+// - Gold icon for a treasure map that's successful
+// - Menu, game-over, win, pause screens
 // - Save serialization
 // - Sound
 

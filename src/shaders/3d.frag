@@ -39,7 +39,7 @@ float calc_shadow_factor()
     float visibility = 1.0;
 
     for (int i=0; i<9; i++){
-        float depth = texture(shadow_map, uv_coords + poissonDisk[i]/1000.0).x;
+        float depth = texture(shadow_map, uv_coords + poissonDisk[i] / 7000.0).x;
 
         if (depth + bias < z) {
             visibility -= 0.111;

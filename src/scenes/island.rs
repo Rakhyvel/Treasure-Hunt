@@ -19,13 +19,14 @@ use crate::{
 };
 
 const MAP_SIZE: usize = 256;
-const SCALE: f32 = MAP_SIZE as f32 / 128.0;
+const SCALE: f32 = MAP_SIZE as f32 / 32.0;
 const UNIT_PER_METER: f32 = 0.1;
 const PERSON_HEIGHT: f32 = 1.6764 * UNIT_PER_METER;
 const SHADOW_SIZE: i32 = 2048;
 
 pub const QUAD_DATA: &[u8] = include_bytes!("../../res/quad.obj");
 pub const CONE_DATA: &[u8] = include_bytes!("../../res/cone.obj");
+pub const BUSH_DATA: &[u8] = include_bytes!("../../res/bush.obj");
 pub const CUBE_DATA: &[u8] = include_bytes!("../../res/cube.obj");
 pub const MOB_DATA: &[u8] = include_bytes!("../../res/mob.obj");
 
@@ -74,7 +75,7 @@ struct Player {
     feet_on_ground: bool,
     facing: f32,
     pitch: f32,
-    prev_mouse_left_down: bool,
+    t_last_shot: f32,
 }
 
 #[derive(Component)]
@@ -338,7 +339,7 @@ impl<'a> System<'a> for PhysicsSystem {
                 let normal = get_normal(&tile.tiles, position.pos.x, position.pos.y);
                 let d = feet_height - position.pos.z;
                 velocity.vel += normal * 0.1 * d; // normal from slopes
-                if nalgebra_glm::length(&velocity.vel.xy()) < 0.1 {
+                if nalgebra_glm::length(&velocity.vel.xy()) < 0.05 {
                     let feet_normal = -nalgebra_glm::vec3(normal.x, normal.y, 0.0);
                     velocity.vel += feet_normal * 0.1 * d; // if standing still, remove the side-to-side component from the slope normal, so there's no slipping
                 }
@@ -362,6 +363,8 @@ impl<'a> System<'a> for PlayerSystem {
         WriteStorage<'a, Player>,
         Read<'a, App>,
         Write<'a, OpenGlResource>,
+        Read<'a, TileResource>,
+        Read<'a, TickResource>,
         Read<'a, LazyUpdate>,
         Entities<'a>,
     );
@@ -374,6 +377,8 @@ impl<'a> System<'a> for PlayerSystem {
             mut players,
             app,
             mut opengl,
+            tiles,
+            tick,
             lazy,
             entities,
         ): Self::SystemData,
@@ -388,15 +393,15 @@ impl<'a> System<'a> for PlayerSystem {
             let curr_shift_state = app.keys[Scancode::LShift as usize];
             let walking = curr_w_state || curr_s_state || curr_a_state || curr_d_state;
             let swimming = opengl.camera.position.z - PERSON_HEIGHT * 0.01 <= 0.5 * SCALE;
-            let walk_speed: f32 = 1.0 * PERSON_HEIGHT / 62.5
+            let walk_speed: f32 = 0.5 * PERSON_HEIGHT / 62.5
                 * if swimming {
                     1.0
                 } else if curr_shift_state {
-                    1.5
+                    2.0
                 } else {
                     1.0
                 };
-            let view_speed: f32 = 0.00001 * (app.screen_width as f32);
+            let view_speed: f32 = 0.01;
             let facing_vec = nalgebra_glm::vec3(
                 player.facing.cos(),
                 player.facing.sin(),
@@ -417,7 +422,7 @@ impl<'a> System<'a> for PlayerSystem {
                 player_vel_vec += -sideways_vec;
             }
             if curr_space_state && (swimming || player.feet_on_ground) {
-                velocity.vel.z += 0.1 * UNIT_PER_METER;
+                velocity.vel.z += 0.05 * UNIT_PER_METER;
             } else if walking {
                 velocity.vel += player_vel_vec.normalize() * walk_speed; // Move the player, this way moving diagonal isn't faster
             }
@@ -426,9 +431,18 @@ impl<'a> System<'a> for PlayerSystem {
                 .max(view_speed - PI / 2.0)
                 .min(PI / 2.0 - view_speed);
 
-            velocity.vel.z -= 0.005 * UNIT_PER_METER; // gravity
-
             opengl.camera.position = position.pos + nalgebra_glm::vec3(0.0, 0.0, PERSON_HEIGHT);
+
+            let feet_height = get_z_scaled_interpolated(
+                &tiles.tiles,
+                opengl.camera.position.x,
+                opengl.camera.position.y,
+            );
+            player.feet_on_ground = opengl.camera.position.z - PERSON_HEIGHT <= feet_height;
+            if !player.feet_on_ground {
+                velocity.vel.x *= 0.8;
+                velocity.vel.y *= 0.8;
+            }
 
             let rot_matrix = nalgebra_glm::rotate_y(
                 &nalgebra_glm::rotate_z(&nalgebra_glm::one(), player.facing),
@@ -437,29 +451,26 @@ impl<'a> System<'a> for PlayerSystem {
             let facing_vec = (rot_matrix * nalgebra_glm::vec4(1.0, 0.0, 0.0, 0.0)).xyz();
             opengl.camera.lookat = opengl.camera.position + facing_vec;
 
-            if !player.prev_mouse_left_down && app.mouse_left_down {
+            const SHOT_PERIOD: f32 = 7.8125;
+            const SHOT_VEL: f32 = 30.0; // m/s
+            if tick.t - player.t_last_shot > SHOT_PERIOD && app.mouse_left_down {
+                player.t_last_shot = tick.t;
+                let gun_pos = opengl.camera.position + nalgebra_glm::vec3(0.0, 0.0, -0.1);
+                let convergence = ((opengl.camera.position + facing_vec * 1.0) - gun_pos)
+                    .normalize()
+                    .scale(SHOT_VEL * UNIT_PER_METER / 62.5);
                 let bullet_entity = entities.create();
                 lazy.insert(
                     bullet_entity,
                     Renderable {
                         mesh_id: 2,
                         scale: nalgebra_glm::vec3(0.01, 0.01, 0.01),
-                        texture: Texture::from_png("res/tree.png"),
+                        texture: Texture::from_png("res/bullet.png"),
                         render_dist: Some(128.0),
                     },
                 );
-                lazy.insert(
-                    bullet_entity,
-                    Position {
-                        pos: opengl.camera.position,
-                    },
-                );
-                lazy.insert(
-                    bullet_entity,
-                    Velocity {
-                        vel: 0.1 * facing_vec,
-                    },
-                );
+                lazy.insert(bullet_entity, Position { pos: gun_pos });
+                lazy.insert(bullet_entity, Velocity { vel: convergence });
                 lazy.insert(bullet_entity, Projectile {});
                 lazy.insert(
                     bullet_entity,
@@ -471,7 +482,6 @@ impl<'a> System<'a> for PlayerSystem {
                     },
                 );
             }
-            player.prev_mouse_left_down = app.mouse_left_down;
         }
     }
 }
@@ -543,10 +553,11 @@ impl<'a> System<'a> for MobSystem {
 
     fn run(&mut self, (positions, mut velocities, mobs, opengl): Self::SystemData) {
         for (position, velocity, _mob) in (&positions, &mut velocities, &mobs).join() {
-            let to_player_dir = (opengl.camera.position - position.pos)
-                .xy()
-                .normalize()
-                .scale(0.01);
+            let to_player = (opengl.camera.position - position.pos).xy();
+            if nalgebra_glm::length(&to_player) > 4.0 {
+                continue;
+            }
+            let to_player_dir = to_player.normalize().scale(0.01);
             velocity.vel.x = to_player_dir.x;
             velocity.vel.y = to_player_dir.y;
         }
@@ -581,12 +592,13 @@ impl<'a> System<'a> for CollisionSystem {
         ReadStorage<'a, Projectile>,
         WriteStorage<'a, Mob>,
         ReadStorage<'a, Collidable>,
+        Read<'a, TileResource>,
         Entities<'a>,
     );
 
     fn run(
         &mut self,
-        (positions, mut velocities, projectiles, mut mobs, collidable, entities): Self::SystemData,
+        (positions, mut velocities, projectiles, mut mobs, collidable, tiles, entities): Self::SystemData,
     ) {
         // Collect each projectile information
         // This is needed because Rust's borrow checker is sorta kinda awful, no cap!
@@ -610,6 +622,14 @@ impl<'a> System<'a> for CollisionSystem {
                     entities.delete(*proj_entity).unwrap();
                     mob_velocity.vel.x += proj_velocity.x;
                     mob_velocity.vel.y += proj_velocity.y;
+                    let tile_z: f32 = get_z_scaled_interpolated(
+                        &tiles.tiles,
+                        mob_position.pos.x,
+                        mob_position.pos.y,
+                    );
+                    if mob_position.pos.z + 0.01 <= tile_z {
+                        mob_velocity.vel.z += 0.1 * UNIT_PER_METER;
+                    }
                 }
             }
         }
@@ -676,8 +696,11 @@ impl Island {
         let mut map = generate(MAP_SIZE, 0.1, rng.gen());
         create_bulge(&mut map);
         erosion(&mut map, MAP_SIZE, 51.0);
-        let spawn_point =
-            nalgebra_glm::vec3((MAP_SIZE / 2) as f32, (MAP_SIZE / 2) as f32, 2.0 * SCALE);
+        let spawn_point = nalgebra_glm::vec3(
+            (MAP_SIZE / 2) as f32,
+            (MAP_SIZE / 2) as f32,
+            get_z_scaled_interpolated(&map, (MAP_SIZE / 2) as f32, (MAP_SIZE / 2) as f32),
+        );
 
         // Setup the font manager
         let font_mgr = FontMgr::new();
@@ -697,6 +720,8 @@ impl Island {
             mesh_mgr.add_mesh(Mesh::from_obj(MOB_DATA, nalgebra_glm::vec3(1.0, 1.0, 1.0)));
         let tree_mesh =
             mesh_mgr.add_mesh(Mesh::from_obj(CONE_DATA, nalgebra_glm::vec3(1.0, 1.0, 1.0)));
+        let bush_mesh =
+            mesh_mgr.add_mesh(Mesh::from_obj(BUSH_DATA, nalgebra_glm::vec3(1.0, 1.0, 1.0)));
         world.insert(MeshMgrResource { data: mesh_mgr });
 
         let depth_map = Texture::new();
@@ -740,7 +765,7 @@ impl Island {
                 quad_mesh,
             ))
             .build();
-        for _ in 0..(MAP_SIZE / 4) {
+        for _ in 0..(MAP_SIZE) {
             // Add all the trees
             let mut attempts = 0;
             loop {
@@ -777,9 +802,8 @@ impl Island {
                 attempts += 1;
             }
         }
-        const NUM_TREASURE: usize = MAP_SIZE / 51;
-        for i in 0..NUM_TREASURE {
-            // Add all the treasure boxes
+        for _ in 0..(MAP_SIZE * 2) {
+            // Add all the bushes
             let mut attempts = 0;
             loop {
                 let (x, y) = (
@@ -788,6 +812,44 @@ impl Island {
                 );
                 let height = get_z_scaled_interpolated(&map, x, y);
                 let dot_prod = get_dot_prod(&map, x, y).abs();
+                let variation = rng.gen_range(0.0..1.0);
+                if height >= 0.66 * SCALE && dot_prod >= 0.8 && dot_prod <= 0.9 {
+                    world
+                        .create_entity()
+                        .with(Renderable {
+                            mesh_id: bush_mesh,
+                            scale: nalgebra_glm::vec3(
+                                (1.0 + 3.0 * variation) * UNIT_PER_METER,
+                                (1.0 + 3.0 * variation) * UNIT_PER_METER,
+                                (1.0 + 3.0 * variation) * UNIT_PER_METER,
+                            ),
+                            texture: Texture::from_png("res/tree.png"),
+                            render_dist: Some(12.0),
+                        })
+                        .with(Position {
+                            pos: nalgebra_glm::vec3(x, y, height),
+                        })
+                        .with(CastsShadow {})
+                        .build();
+                    break;
+                }
+                if attempts > 100 {
+                    break;
+                }
+                attempts += 1;
+            }
+        }
+        const NUM_TREASURE: usize = MAP_SIZE / 51;
+        for i in 0..NUM_TREASURE {
+            // Add all the treasure boxes
+            let mut attempts = 0;
+            loop {
+                let (treasure_x, treasure_y) = (
+                    rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
+                    rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
+                );
+                let height = get_z_scaled_interpolated(&map, treasure_x, treasure_y);
+                let dot_prod = get_dot_prod(&map, treasure_x, treasure_y).abs();
                 if height >= 0.5 * SCALE
                     && height <= 0.8 * SCALE
                     && height / SCALE < 0.75 * dot_prod
@@ -802,7 +864,7 @@ impl Island {
                             render_dist: Some(128.0),
                         })
                         .with(Position {
-                            pos: nalgebra_glm::vec3(x, y, height),
+                            pos: nalgebra_glm::vec3(treasure_x, treasure_y, height),
                         })
                         .with(CastsShadow {})
                         .build();
@@ -825,48 +887,38 @@ impl Island {
                             found: false,
                         })
                         .build();
-                    break;
-                }
-                if attempts > 100 {
-                    break;
-                }
-                attempts += 1;
-            }
-        }
-        const NUM_MOBS: usize = MAP_SIZE;
-        for _ in 0..NUM_MOBS {
-            let mut attempts = 0;
-            loop {
-                let (x, y) = (
-                    rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
-                    rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
-                );
-                let height = get_z_scaled_interpolated(&map, x, y);
-                if height >= 0.5 * SCALE {
-                    // Add mob
-                    world
-                        .create_entity()
-                        .with(Renderable {
-                            mesh_id: mob_mesh,
-                            scale: nalgebra_glm::vec3(1.0, 1.0, 1.0),
-                            texture: Texture::from_png("res/tree.png"),
-                            render_dist: Some(128.0),
-                        })
-                        .with(Position {
-                            pos: nalgebra_glm::vec3(x, y, height),
-                        })
-                        .with(Velocity {
-                            vel: nalgebra_glm::zero(),
-                        })
-                        .with(CastsShadow {})
-                        .with(Mob {})
-                        .with(Collidable {
-                            aabb: AABB::from_min_max(
-                                nalgebra_glm::vec3(-0.05, -0.05, 0.0),
-                                nalgebra_glm::vec3(0.05, 0.05, 0.2),
-                            ),
-                        })
-                        .build();
+
+                    // Add mobs
+                    const NUM_MOBS: usize = 5;
+                    for _ in 0..NUM_MOBS {
+                        let (x, y) = (
+                            rng.gen::<f32>() - 0.5 + treasure_x,
+                            rng.gen::<f32>() - 0.5 + treasure_y,
+                        );
+                        world
+                            .create_entity()
+                            .with(Renderable {
+                                mesh_id: mob_mesh,
+                                scale: nalgebra_glm::vec3(1.0, 1.0, 1.0),
+                                texture: Texture::from_png("res/ghost.png"),
+                                render_dist: Some(128.0),
+                            })
+                            .with(Position {
+                                pos: nalgebra_glm::vec3(x, y, height),
+                            })
+                            .with(Velocity {
+                                vel: nalgebra_glm::zero(),
+                            })
+                            .with(CastsShadow {})
+                            .with(Mob {})
+                            .with(Collidable {
+                                aabb: AABB::from_min_max(
+                                    nalgebra_glm::vec3(-0.05, -0.05, 0.0),
+                                    nalgebra_glm::vec3(0.05, 0.05, 0.2),
+                                ),
+                            })
+                            .build();
+                    }
                     break;
                 }
                 if attempts > 100 {
@@ -889,7 +941,7 @@ impl Island {
                 feet_on_ground: true,
                 facing: 3.14,
                 pitch: 0.0,
-                prev_mouse_left_down: false,
+                t_last_shot: 0.0,
             })
             .with(Position { pos: spawn_point })
             .with(Velocity {

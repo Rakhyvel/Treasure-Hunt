@@ -15,6 +15,7 @@ use scenes::island::Island;
 // x Maps & Treasure
 // x Enemy mobs
 // - Health bar, health system
+// - Cylindrical collision with mobs, players, and trees etc
 // - Actual treasure chest mesh
 // - Gold icon for a treasure map that's successful
 // - Menu, game-over, win, pause screens

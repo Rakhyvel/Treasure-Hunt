@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 gl = "*"
-sdl2 = { version = "*", features = ["bundled", "ttf"], default-features = false }
+sdl2 = { version = "0.34.5", features = ["bundled", "ttf", "mixer"], default-features = false }
 nalgebra-glm = "*"
 obj-rs = "*"
 colors-transform = "*"

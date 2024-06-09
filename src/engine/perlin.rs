@@ -73,12 +73,12 @@ fn lin_inter(x: f32, y: f32, s: f32) -> f32 {
 }
 
 pub fn erosion(map: &mut Vec<f32>, map_size: usize, intensity: f32) {
-    let sediment_capacity_factor: f32 = 1000.0;
+    let sediment_capacity_factor: f32 = 1.0;
     let max_sediment_capacity: f32 = 1.0; // small values = more deposit
     let deposit_speed = 0.01;
     let erode_speed: f32 = 0.01;
-    let evaporate_speed = 0.0000000001;
-    let gravity = 100.0;
+    let evaporate_speed = 0.00001;
+    let gravity = 10.0;
 
     let mut total_eroded: f32 = 0.0;
 
@@ -139,7 +139,7 @@ pub fn erosion(map: &mut Vec<f32>, map_size: usize, intensity: f32) {
                     deposit_amount
                 }
             } else {
-                -(erosion_ease * erode_speed).min(delta_height.abs() + 0.1)
+                -(erosion_ease * erode_speed).min(delta_height.abs())
             };
             sediment -= delta_z;
             total_eroded += if delta_z < 0.0 { delta_z } else { 0.0 };

@@ -14,12 +14,11 @@ use scenes::island::Island;
 // x ecs
 // x Maps & Treasure
 // x Enemy mobs
-// - Health bar, health system
-// - Cylindrical collision with mobs, players, and trees etc
-// - Actual treasure chest mesh
-// - Gold icon for a treasure map that's successful
-// - Menu, game-over, win, pause screens
-// - Save serialization
+// x Health bar, health system, splish animation
+// x Cylindrical collision with mobs, players, and trees etc
+// x Actual treasure chest mesh
+// x Gold icon for a treasure map that's successful, open treasure chest
+// - Text that at least tells you what to do
 // - Sound
 
 fn main() -> Result<(), String> {

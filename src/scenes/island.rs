@@ -8,6 +8,7 @@ use specs::{prelude::*, Component, Join, ReadStorage};
 use crate::{
     engine::{
         aabb::AABB,
+        audio::AudioManager,
         camera::{Camera, ProjectionKind},
         frustrum::Frustrum,
         mesh::{Mesh, MeshMgr, MeshMgrResource},
@@ -18,11 +19,11 @@ use crate::{
     App, Scene,
 };
 
-const MAP_SIZE: usize = 1024;
+const MAP_SIZE: usize = 256;
 const CHUNK_SIZE: usize = 64;
 const SCALE: f32 = 1.0;
-const UNIT_PER_METER: f32 = 0.2;
-const PERSON_HEIGHT: f32 = 1.6764 * UNIT_PER_METER;
+const UNIT_PER_METER: f32 = 0.1;
+const PERSON_HEIGHT: f32 = 100.6764 * UNIT_PER_METER;
 const SHADOW_SIZE: i32 = 1024;
 
 pub const QUAD_DATA: &[u8] = include_bytes!("../../res/quad.obj");
@@ -30,6 +31,7 @@ pub const CONE_DATA: &[u8] = include_bytes!("../../res/cone.obj");
 pub const BUSH_DATA: &[u8] = include_bytes!("../../res/bush.obj");
 pub const CUBE_DATA: &[u8] = include_bytes!("../../res/cube.obj");
 pub const MOB_DATA: &[u8] = include_bytes!("../../res/mob.obj");
+pub const CHEST_DATA: &[u8] = include_bytes!("../../res/chest.obj");
 
 /*
  * RESOURCES
@@ -67,6 +69,17 @@ struct TileResource {
     tiles: Vec<f32>,
 }
 
+struct AudioResource {
+    audio_mgr: AudioManager,
+}
+#[allow(unreachable_code)]
+impl Default for AudioResource {
+    fn default() -> Self {
+        println!("default called, whuh oh!");
+        Self { audio_mgr: todo!() }
+    }
+}
+
 /*
  * COMPONENTS
  */
@@ -77,6 +90,7 @@ struct Player {
     facing: f32,
     pitch: f32,
     t_last_shot: f32,
+    t_last_walk_played: f32,
 }
 
 #[derive(Component)]
@@ -134,6 +148,12 @@ struct Health {
 #[storage(VecStorage)]
 struct CylinderRadius {
     radius: f32, // 1.0 is full health, 0.0 is dead
+}
+
+#[derive(Component)]
+#[storage(VecStorage)]
+struct DeathSplishAnim {
+    timeline: f32, // 0.0 is just starting 1.0 is end
 }
 
 /*
@@ -385,6 +405,7 @@ impl<'a> System<'a> for PlayerSystem {
         WriteStorage<'a, Player>,
         Read<'a, App>,
         Write<'a, OpenGlResource>,
+        Read<'a, AudioResource>,
         Read<'a, TileResource>,
         Read<'a, TickResource>,
         Read<'a, LazyUpdate>,
@@ -399,6 +420,7 @@ impl<'a> System<'a> for PlayerSystem {
             mut players,
             app,
             mut opengl,
+            audio,
             tiles,
             tick,
             lazy,
@@ -414,7 +436,7 @@ impl<'a> System<'a> for PlayerSystem {
             let curr_space_state = app.keys[Scancode::Space as usize];
             let curr_shift_state = app.keys[Scancode::LShift as usize];
             let walking = curr_w_state || curr_s_state || curr_a_state || curr_d_state;
-            let swimming = opengl.camera.position.z - PERSON_HEIGHT * 0.01 <= 0.5 * SCALE;
+            let swimming = position.pos.z <= 0.5 * SCALE;
             let walk_speed: f32 = 1.0 * PERSON_HEIGHT / 62.5
                 * if swimming {
                     1.0
@@ -443,8 +465,12 @@ impl<'a> System<'a> for PlayerSystem {
             if curr_d_state {
                 player_vel_vec += -sideways_vec;
             }
-            if curr_space_state && (swimming || player.feet_on_ground) {
+            if curr_space_state && swimming {
+                velocity.vel.z += 0.001 * UNIT_PER_METER;
+                velocity.vel.z = velocity.vel.z.min(0.1);
+            } else if curr_space_state && player.feet_on_ground {
                 velocity.vel.z += 0.1 * UNIT_PER_METER;
+                audio.audio_mgr.play_sound("res/jump.ogg".to_string(), 128);
             } else if walking {
                 velocity.vel += player_vel_vec.normalize() * walk_speed; // Move the player, this way moving diagonal isn't faster
             }
@@ -474,7 +500,7 @@ impl<'a> System<'a> for PlayerSystem {
             opengl.camera.lookat = opengl.camera.position + facing_vec;
 
             const SHOT_PERIOD: f32 = 7.8125;
-            const SHOT_VEL: f32 = 100.0; // m/s
+            const SHOT_VEL: f32 = 74.0; // m/s
             if tick.t - player.t_last_shot > SHOT_PERIOD && app.mouse_left_down {
                 player.t_last_shot = tick.t;
                 let gun_pos =
@@ -486,7 +512,7 @@ impl<'a> System<'a> for PlayerSystem {
                 lazy.insert(
                     bullet_entity,
                     Renderable {
-                        mesh_id: 2,
+                        mesh_id: 1,
                         scale: nalgebra_glm::vec3(0.01, 0.01, 0.01),
                         texture: Texture::from_png("res/bullet.png"),
                         render_dist: Some(128.0),
@@ -504,6 +530,15 @@ impl<'a> System<'a> for PlayerSystem {
                         ),
                     },
                 );
+                audio.audio_mgr.play_sound("res/pop.ogg".to_string(), 128);
+            }
+            const WALK_PERIOD: f32 = 0.088512;
+            if walking
+                && player.feet_on_ground
+                && tick.t - player.t_last_walk_played > (WALK_PERIOD / walk_speed)
+            {
+                player.t_last_walk_played = tick.t;
+                audio.audio_mgr.play_sound("res/walk.ogg".to_string(), 35);
             }
         }
     }
@@ -527,12 +562,22 @@ impl<'a> System<'a> for TreasureSystem {
         ReadStorage<'a, Velocity>,
         ReadStorage<'a, Player>,
         Read<'a, OpenGlResource>,
+        Read<'a, AudioResource>,
         Entities<'a>,
     );
 
     fn run(
         &mut self,
-        (mut treasure_maps, mut quads, positions, velocities, player, opengl, entities): Self::SystemData,
+        (
+            mut treasure_maps,
+            mut quads,
+            positions,
+            velocities,
+            player,
+            opengl,
+            audio,
+            entities,
+        ): Self::SystemData,
     ) {
         let (_, player_entity) = (&player, &entities).join().next().unwrap();
         let player_velocity = velocities.get(player_entity).unwrap();
@@ -544,6 +589,10 @@ impl<'a> System<'a> for TreasureSystem {
             if let Some(treasure_position) = positions.get(treasure_entity) {
                 let to_treasure = treasure_position.pos - opengl.camera.position;
                 if nalgebra_glm::length(&to_treasure) < 3.0 * UNIT_PER_METER {
+                    if !treasure_map.found {
+                        quad.texture = Texture::from_png("res/gold.png");
+                        audio.audio_mgr.play_sound("res/win.ogg".to_string(), 128);
+                    }
                     treasure_map.found = true;
                 }
 
@@ -593,15 +642,25 @@ impl<'a> System<'a> for ProjectileSystem {
         WriteStorage<'a, Position>,
         WriteStorage<'a, Projectile>,
         Read<'a, TileResource>,
+        Read<'a, AudioResource>,
+        Read<'a, OpenGlResource>,
         Entities<'a>,
     );
 
-    fn run(&mut self, (mut positions, mut projectiles, tile, entities): Self::SystemData) {
+    fn run(
+        &mut self,
+        (mut positions, mut projectiles, tile, audio, opengl, entities): Self::SystemData,
+    ) {
         for (position, _, entity) in (&mut positions, &mut projectiles, &entities).join() {
             let tile_z: f32 =
                 get_z_scaled_interpolated(&tile.tiles, position.pos.x, position.pos.y);
             if position.pos.z < tile_z {
                 entities.delete(entity).unwrap();
+                let distance = nalgebra_glm::length(&(opengl.camera.position - position.pos));
+                audio.audio_mgr.play_sound(
+                    "res/ground.ogg".to_string(),
+                    (50.0 * 128.0 / distance.powf(2.0)) as i32,
+                );
             }
         }
     }
@@ -617,12 +676,23 @@ impl<'a> System<'a> for CollisionSystem {
         ReadStorage<'a, Mob>,
         ReadStorage<'a, Collidable>,
         Read<'a, TileResource>,
+        Read<'a, AudioResource>,
         Entities<'a>,
     );
 
     fn run(
         &mut self,
-        (positions, mut velocities, mut healths, projectiles,  mobs, collidable, tiles, entities): Self::SystemData,
+        (
+            positions,
+            mut velocities,
+            mut healths,
+            projectiles,
+            mobs,
+            collidable,
+            tiles,
+            audio,
+            entities,
+        ): Self::SystemData,
     ) {
         // Collect each projectile information
         // This is needed because Rust's borrow checker is sorta kinda awful, no cap!
@@ -655,6 +725,7 @@ impl<'a> System<'a> for CollisionSystem {
                         mob_velocity.vel.z += 0.1 * UNIT_PER_METER;
                     }
                     mob_health.health -= 0.1;
+                    audio.audio_mgr.play_sound("res/hit.ogg".to_string(), 128);
                 }
             }
         }
@@ -663,15 +734,79 @@ impl<'a> System<'a> for CollisionSystem {
 
 struct HealthSystem;
 impl<'a> System<'a> for HealthSystem {
-    type SystemData = (WriteStorage<'a, Health>, Entities<'a>);
+    type SystemData = WriteStorage<'a, Health>;
 
-    fn run(&mut self, (mut healths, entities): Self::SystemData) {
-        for (health, entity) in (&mut healths, &entities).join() {
+    fn run(&mut self, mut healths: Self::SystemData) {
+        for health in (&mut healths).join() {
+            health.health = health.health.clamp(0.0, 1.0);
+        }
+    }
+}
+
+struct MobDeathSystem;
+impl<'a> System<'a> for MobDeathSystem {
+    type SystemData = (
+        WriteStorage<'a, Health>,
+        ReadStorage<'a, Mob>,
+        WriteStorage<'a, DeathSplishAnim>,
+        WriteStorage<'a, Collidable>,
+        WriteStorage<'a, CastsShadow>,
+        Read<'a, AudioResource>,
+        Entities<'a>,
+    );
+
+    fn run(
+        &mut self,
+        (
+            mut healths,
+            mobs,
+            mut death_splish_anims,
+            mut collidables,
+            mut casts_shadows,
+            audio,
+            entities,
+        ): Self::SystemData,
+    ) {
+        let mut removed_entities = Vec::new();
+        for (health, _mob, entity) in (&healths, &mobs, &entities).join() {
             if health.health <= 0.0 {
-                entities.delete(entity).unwrap();
-            } else {
-                health.health = health.health.clamp(0.0, 1.0);
+                death_splish_anims
+                    .insert(entity, DeathSplishAnim { timeline: 0.0 })
+                    .unwrap();
+                removed_entities.push(entity);
             }
+        }
+        for removed_entity in removed_entities {
+            healths.remove(removed_entity);
+            collidables.remove(removed_entity);
+            casts_shadows.remove(removed_entity);
+            audio.audio_mgr.play_sound("res/dead.ogg".to_string(), 128);
+        }
+    }
+}
+struct DeathSplishAnimSystem;
+impl<'a> System<'a> for DeathSplishAnimSystem {
+    type SystemData = (
+        WriteStorage<'a, Renderable>,
+        WriteStorage<'a, DeathSplishAnim>,
+        Entities<'a>,
+    );
+
+    fn run(&mut self, (mut renderables, mut death_splish_anims, entities): Self::SystemData) {
+        let mut removed_entities = Vec::new();
+        for (renderable, death_splish_anim, entity) in
+            (&mut renderables, &mut death_splish_anims, &entities).join()
+        {
+            death_splish_anim.timeline += 1.0 / (1.0 * 62.0);
+            let z = 1.0 - death_splish_anim.timeline.powf(2.0);
+            let xy = (3.33 / (z + 0.833)).sqrt();
+            renderable.scale = nalgebra_glm::vec3(xy, xy, z);
+            if death_splish_anim.timeline >= 1.0 {
+                removed_entities.push(entity);
+            }
+        }
+        for removed_entity in removed_entities {
+            entities.delete(removed_entity).unwrap();
         }
     }
 }
@@ -747,6 +882,7 @@ impl Island {
         world.register::<Collidable>();
         world.register::<Health>();
         world.register::<CylinderRadius>();
+        world.register::<DeathSplishAnim>();
 
         // Setup the dispatchers
         let mut update_dispatcher_builder = DispatcherBuilder::new();
@@ -759,6 +895,8 @@ impl Island {
         update_dispatcher_builder.add(ProjectileSystem, "projectile system", &[]);
         update_dispatcher_builder.add(CollisionSystem, "collision system", &[]);
         update_dispatcher_builder.add(HealthSystem, "health system", &[]);
+        update_dispatcher_builder.add(MobDeathSystem, "mobe deat system", &[]);
+        update_dispatcher_builder.add(DeathSplishAnimSystem, "deat spih ah system", &[]);
 
         let mut render_dispatcher_builder = DispatcherBuilder::new();
         render_dispatcher_builder.add(SkySystem, "sky system", &[]);
@@ -773,15 +911,17 @@ impl Island {
         let mut map = generate(MAP_SIZE, 0.05, rng.gen());
         let mut map2 = generate(MAP_SIZE, 0.03, rng.gen());
         let mut map3 = generate(MAP_SIZE, 0.01, rng.gen());
+        let mut map4 = generate(MAP_SIZE, 0.006, rng.gen());
         normalize(&mut map);
         normalize(&mut map2);
         normalize(&mut map3);
+        normalize(&mut map4);
         for i in 0..map2.len() {
-            map[i] *= map2[i] * map3[i];
+            map[i] *= map2[i] * map3[i] * map4[i];
         }
         normalize(&mut map);
         create_bulge(&mut map);
-        erosion(&mut map, MAP_SIZE, 51.0);
+        erosion(&mut map, MAP_SIZE, 1024.0);
         let height = get_z_scaled_interpolated(&map, (MAP_SIZE / 2) as f32, (MAP_SIZE / 2) as f32);
         let mut spawn_point =
             nalgebra_glm::vec3((MAP_SIZE / 2) as f32, (MAP_SIZE / 2) as f32, height);
@@ -805,7 +945,7 @@ impl Island {
         let mut mesh_mgr = MeshMgr::new();
         let quad_mesh =
             mesh_mgr.add_mesh(Mesh::from_obj(QUAD_DATA, nalgebra_glm::vec3(1.0, 1.0, 1.0)));
-        let cube_mesh =
+        let _cube_mesh =
             mesh_mgr.add_mesh(Mesh::from_obj(CUBE_DATA, nalgebra_glm::vec3(1.0, 1.0, 1.0)));
         let mob_mesh =
             mesh_mgr.add_mesh(Mesh::from_obj(MOB_DATA, nalgebra_glm::vec3(1.0, 1.0, 1.0)));
@@ -813,6 +953,10 @@ impl Island {
             mesh_mgr.add_mesh(Mesh::from_obj(CONE_DATA, nalgebra_glm::vec3(1.0, 1.0, 1.0)));
         let bush_mesh =
             mesh_mgr.add_mesh(Mesh::from_obj(BUSH_DATA, nalgebra_glm::vec3(1.0, 1.0, 1.0)));
+        let chest_mesh = mesh_mgr.add_mesh(Mesh::from_obj(
+            CHEST_DATA,
+            nalgebra_glm::vec3(1.0, 1.0, 1.0),
+        ));
 
         let depth_map = Texture::new();
         depth_map.load_depth_buffer(SHADOW_SIZE, SHADOW_SIZE);
@@ -823,7 +967,6 @@ impl Island {
         // Add entities
         for chunk_y in (0..(MAP_SIZE)).step_by(CHUNK_SIZE) {
             for chunk_x in (0..(MAP_SIZE)).step_by(CHUNK_SIZE) {
-                println!("chunk: ({}, {})", chunk_x, chunk_y);
                 let (i, v, n, u, c) = create_mesh(&map, chunk_x, chunk_y);
                 let grass_mesh = mesh_mgr.add_mesh(Mesh::new(i, vec![v, n, u, c]));
                 world
@@ -937,7 +1080,7 @@ impl Island {
                 attempts += 1;
             }
         }
-        const NUM_TREASURE: usize = MAP_SIZE / 320;
+        const NUM_TREASURE: usize = MAP_SIZE / 51;
         for i in 0..NUM_TREASURE {
             // Add all the treasure boxes
             let mut attempts = 0;
@@ -956,9 +1099,9 @@ impl Island {
                     let treasure_entity = world
                         .create_entity()
                         .with(Renderable {
-                            mesh_id: cube_mesh,
-                            scale: nalgebra_glm::vec3(0.1, 0.1, 0.1),
-                            texture: Texture::from_png("res/tree.png"),
+                            mesh_id: chest_mesh,
+                            scale: nalgebra_glm::vec3(0.05, 0.05, 0.05),
+                            texture: Texture::from_png("res/chest.png"),
                             render_dist: Some(128.0),
                         })
                         .with(Position {
@@ -1042,6 +1185,7 @@ impl Island {
                 facing: 3.14,
                 pitch: 0.0,
                 t_last_shot: 0.0,
+                t_last_walk_played: 0.0,
             })
             .with(Position { pos: spawn_point })
             .with(Velocity {
@@ -1052,6 +1196,9 @@ impl Island {
 
         // Add resources
         world.insert(App::default());
+        world.insert(AudioResource {
+            audio_mgr: AudioManager::new(),
+        });
         world.insert(TickResource { t: 0.0 });
         world.insert(OpenGlResource {
             camera: Camera::new(
@@ -1142,11 +1289,11 @@ fn create_bulge(map: &mut Vec<f32>) {
             let xo = (x as f32) - (MAP_SIZE as f32) / 2.0;
             let yo = (y as f32) - (MAP_SIZE as f32) / 2.0;
             let d = ((xo * xo + yo * yo) as f32).sqrt();
-            let s: f32 = 0.15; //z * 0.01 + 0.2 - 0.2 * (d / MAP_SIZE as f32); // Tweak me to make the island pointier
+            let s: f32 = 0.1; //z * 0.01 + 0.2 - 0.2 * (d / MAP_SIZE as f32); // Tweak me to make the island pointier
             let m: f32 = MAP_SIZE as f32 * 0.8; // Tweak me to make the island wider
             let bulge: f32 = (1.0 / (2.0 * pi::<f32>() * s.powf(2.0)))
                 * (-((d / m).powf(4.0)) / (2.0 * s.powf(2.0))).exp();
-            map[x + y * MAP_SIZE] = bulge * z - 1.0;
+            map[x + y * MAP_SIZE] = bulge * z;
         }
     }
 }
@@ -1251,9 +1398,9 @@ fn add_triangle(
     for _ in 0..3 {
         if avg_z < 0.9 * dot_prod {
             // sand
+            colors.push(0.9);
             colors.push(0.8);
             colors.push(0.7);
-            colors.push(0.6);
         } else if 0.9 >= dot_prod {
             // stone
             colors.push(0.5);
@@ -1261,9 +1408,9 @@ fn add_triangle(
             colors.push(0.4);
         } else {
             // grass
-            colors.push(0.3);
-            colors.push(0.4);
-            colors.push(0.2);
+            colors.push(0.27);
+            colors.push(0.36);
+            colors.push(0.19);
         }
     }
 }

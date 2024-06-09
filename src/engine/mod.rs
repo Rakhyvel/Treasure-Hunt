@@ -1,5 +1,6 @@
 pub(crate) mod aabb;
 pub(crate) mod app;
+pub(crate) mod audio;
 pub(crate) mod camera;
 pub(crate) mod frustrum;
 pub(crate) mod mesh;

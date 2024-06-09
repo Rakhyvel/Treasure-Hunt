@@ -38,6 +38,7 @@ pub fn run(
 ) -> Result<(), String> {
     let sdl_context = sdl2::init()?;
     let video_subsystem = sdl_context.video()?;
+    let _audio_subsystem = sdl_context.audio()?;
 
     let gl_attr = video_subsystem.gl_attr();
     gl_attr.set_context_profile(sdl2::video::GLProfile::Core);
@@ -149,6 +150,7 @@ pub fn run(
             frames = 0;
         }
     }
+
     Ok(())
 }
 

@@ -12,11 +12,11 @@ pub struct App {
     // Screen stuff
     pub screen_width: i32,
     pub screen_height: i32,
-    // pub sdl_context: Sdl,
 
     // Main loop stuff
     pub running: bool,
     pub seconds: f32, //< How many seconds the program has been up
+    pub ticks: usize, //< How many ticks the program has been up
 
     // User input state
     pub keys: [bool; 256],
@@ -27,7 +27,6 @@ pub struct App {
     pub mouse_left_down: bool,
     pub mouse_right_down: bool,
     pub mouse_wheel: f32,
-    // Scene stack stuff
 }
 
 pub fn run(
@@ -84,7 +83,7 @@ pub fn run(
         mouse_right_down: false,
         mouse_wheel: 0.0,
         seconds: 0.0,
-        // scene_stack: Vec::new(),
+        ticks: 0,
     };
 
     let initial_scene = init(&app);
@@ -97,7 +96,6 @@ pub fn run(
     let mut previous = 0;
     let mut lag = 0;
     let mut elapsed;
-    let mut ticks = 0;
     let mut frames = 0;
     const DELTA_T: u128 = 16;
     while app.running {
@@ -121,7 +119,7 @@ pub fn run(
 
             if let Some(scene_ref) = scene_stack.last() {
                 scene_ref.borrow_mut().update(&app);
-                ticks += 1;
+                app.ticks += 1;
             }
 
             if !scene_stale {
@@ -144,9 +142,8 @@ pub fn run(
         let freq = unsafe { SDL_GetPerformanceFrequency() };
         let seconds = (end as f64 - (start as f64)) / (freq as f64);
         if seconds > 5.0 {
-            println!("5 seconds; ticks: {}; fps: {}", ticks, frames / 5);
+            println!("5 seconds;  fps: {}", frames / 5);
             start = end as u128;
-            ticks = 0;
             frames = 0;
         }
     }
@@ -229,6 +226,7 @@ impl Default for App {
             screen_height: Default::default(),
             running: Default::default(),
             seconds: Default::default(),
+            ticks: Default::default(),
             keys: [false; 256],
             mouse_x: Default::default(),
             mouse_y: Default::default(),
@@ -237,7 +235,6 @@ impl Default for App {
             mouse_left_down: Default::default(),
             mouse_right_down: Default::default(),
             mouse_wheel: Default::default(),
-            // scene_stack: Default::default(),
         }
     }
 }

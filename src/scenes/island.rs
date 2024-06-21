@@ -1,30 +1,29 @@
 use std::f32::consts::PI;
 
 use nalgebra_glm::pi;
-use rand::Rng;
+use rand::{Rng, SeedableRng};
 use sdl2::{keyboard::Scancode, pixels::Color};
 use specs::{prelude::*, Component, Join, ReadStorage};
 
 use crate::{
     engine::{
         aabb::AABB,
-        audio::AudioManager,
+        audio::{AudioManager, AudioResource},
         camera::{Camera, ProjectionKind},
-        frustrum::Frustrum,
-        mesh::{Mesh, MeshMgr, MeshMgrResource},
-        objects::{create_program, Fbo, Program, Texture, Uniform},
-        perlin::*,
-        text::{initialize_gui, FontMgr, Quad},
+        objects::{create_program, Texture},
+        perlin::{PerlinMap, PerlinMapResource},
+        physics::{PositionComponent, VelocityComponent},
+        render3d::{Mesh, MeshComponent, MeshMgr, MeshMgrResource, OpenGlResource, Render3dSystem},
+        shadow_map::{CastsShadowComponent, ShadowSystem, SunResource},
+        text::{initialize_gui, FontMgr, QuadComponent, UIResource},
     },
     App, Scene,
 };
 
-const MAP_SIZE: usize = 256;
+const MAP_SIZE: usize = 448;
 const CHUNK_SIZE: usize = 64;
-const SCALE: f32 = 1.0;
 const UNIT_PER_METER: f32 = 0.1;
-const PERSON_HEIGHT: f32 = 100.6764 * UNIT_PER_METER;
-const SHADOW_SIZE: i32 = 1024;
+const PERSON_HEIGHT: f32 = 1.6764 * UNIT_PER_METER;
 
 pub const QUAD_DATA: &[u8] = include_bytes!("../../res/quad.obj");
 pub const CONE_DATA: &[u8] = include_bytes!("../../res/cone.obj");
@@ -34,125 +33,59 @@ pub const MOB_DATA: &[u8] = include_bytes!("../../res/mob.obj");
 pub const CHEST_DATA: &[u8] = include_bytes!("../../res/chest.obj");
 
 /*
- * RESOURCES
- */
-#[derive(Default)]
-struct TickResource {
-    t: f32,
-}
-
-#[derive(Default)]
-pub struct OpenGlResource {
-    // TODO: Put in engine I think
-    pub camera: Camera,
-    pub program: Program,
-}
-
-#[derive(Default)]
-pub struct UIResource {
-    // TODO: Put in engine I think
-    pub camera: Camera,
-    pub program: Program,
-}
-
-#[derive(Default)]
-struct SunResource {
-    shadow_camera: Camera,
-    shadow_program: Program,
-    fbo: Fbo,
-    depth_map: Texture,
-    light_dir: nalgebra_glm::Vec3,
-}
-
-#[derive(Default)]
-struct TileResource {
-    tiles: Vec<f32>,
-}
-
-struct AudioResource {
-    audio_mgr: AudioManager,
-}
-#[allow(unreachable_code)]
-impl Default for AudioResource {
-    fn default() -> Self {
-        println!("default called, whuh oh!");
-        Self { audio_mgr: todo!() }
-    }
-}
-
-/*
  * COMPONENTS
  */
 #[derive(Component)]
 #[storage(HashMapStorage)]
-struct Player {
+struct PlayerComponent {
+    // Status
     feet_on_ground: bool,
+
+    // View variables
     facing: f32,
     pitch: f32,
-    t_last_shot: f32,
-    t_last_walk_played: f32,
-}
 
-#[derive(Component)]
-struct Renderable {
-    mesh_id: usize,
-    scale: nalgebra_glm::Vec3,
-    texture: Texture,
-    render_dist: Option<f32>, //< When Some, only render when the position is this close to the camera
-}
-
-#[derive(Component)]
-struct Position {
-    pos: nalgebra_glm::Vec3,
-}
-
-#[derive(Component)]
-struct Velocity {
-    vel: nalgebra_glm::Vec3,
-}
-
-#[derive(Default)]
-struct CastsShadow;
-impl Component for CastsShadow {
-    type Storage = NullStorage<Self>;
+    // Animations and timing
+    t_last_shot: usize,
+    t_last_walk_played: usize,
 }
 
 #[derive(Component)]
 #[storage(VecStorage)]
-struct TreasureMap {
+struct TreasureMapComponent {
     treasure_entity: Entity,
     found: bool,
 }
 
 #[derive(Component)]
 #[storage(VecStorage)]
-struct Mob {}
+struct MobComponent {}
 
 #[derive(Component)]
 #[storage(VecStorage)]
-struct Projectile {}
+struct ProjectileComponent {}
 
 #[derive(Component)]
 #[storage(VecStorage)]
-struct Collidable {
+struct CollidableComponent {
     aabb: AABB,
 }
 
 #[derive(Component)]
 #[storage(VecStorage)]
-struct Health {
+struct HealthComponent {
     health: f32, // 1.0 is full health, 0.0 is dead
 }
 
 #[derive(Component)]
 #[storage(VecStorage)]
-struct CylinderRadius {
+struct CylinderRadiusComponent {
     radius: f32, // 1.0 is full health, 0.0 is dead
 }
 
 #[derive(Component)]
 #[storage(VecStorage)]
-struct DeathSplishAnim {
+struct DeathSplishAnimComponent {
     timeline: f32, // 0.0 is just starting 1.0 is end
 }
 
@@ -164,17 +97,16 @@ impl<'a> System<'a> for SkySystem {
     type SystemData = (
         Read<'a, App>,
         Read<'a, OpenGlResource>,
-        Read<'a, TickResource>,
         Write<'a, SunResource>,
     );
-    fn run(&mut self, (app, open_gl, tick_res, mut sun): Self::SystemData) {
+    fn run(&mut self, (app, open_gl, mut sun): Self::SystemData) {
         const MIN_PER_DAY: f32 = 60.0;
         // Noon:     0.0
         // Evening:  1.57
         // Midnight: 3.14
         // Morning:  4.71
         // Noon2:    6.28
-        let model_t = tick_res.t / (MIN_PER_DAY * 60.0 * 62.6) + 5.5;
+        let model_t = app.ticks as f32 / (MIN_PER_DAY * 60.0 * 62.6) + 5.5;
         unsafe {
             let day_color = nalgebra_glm::vec3(172.0, 205.0, 248.0);
             let night_color = nalgebra_glm::vec3(5.0, 6.0, 7.0);
@@ -199,186 +131,21 @@ impl<'a> System<'a> for SkySystem {
     }
 }
 
-struct RenderSystem;
-impl<'a> System<'a> for RenderSystem {
-    type SystemData = (
-        ReadStorage<'a, Renderable>,
-        ReadStorage<'a, Position>,
-        Read<'a, App>,
-        Read<'a, MeshMgrResource>,
-        Read<'a, OpenGlResource>,
-        Write<'a, SunResource>,
-    );
-
-    fn run(&mut self, (render_comps, positions, app, mesh_mgr, open_gl, sun): Self::SystemData) {
-        unsafe {
-            gl::Viewport(0, 0, app.screen_width, app.screen_height);
-            gl::Enable(gl::CULL_FACE);
-            gl::CullFace(gl::BACK);
-            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
-        }
-
-        open_gl.program.set();
-
-        for (renderable, position) in (&render_comps, &positions).join() {
-            match renderable.render_dist {
-                Some(d) => {
-                    if nalgebra_glm::length(&(position.pos - open_gl.camera.position)) > d {
-                        continue;
-                    }
-                }
-                None => {}
-            }
-            let mesh = mesh_mgr.data.get_mesh(renderable.mesh_id);
-            renderable.texture.activate(gl::TEXTURE0);
-            renderable
-                .texture
-                .associate_uniform(open_gl.program.id(), 0, "texture0");
-            sun.depth_map.activate(gl::TEXTURE1);
-            sun.depth_map
-                .associate_uniform(open_gl.program.id(), 1, "shadow_map");
-
-            let u_light_matrix = Uniform::new(open_gl.program.id(), "light_mvp").unwrap();
-            let model_matrix = Mesh::get_model_matrix(position.pos, renderable.scale);
-            let (light_view_matrix, light_proj_matrix) = sun.shadow_camera.gen_view_proj_matrices();
-            let light_space_mvp = light_proj_matrix * light_view_matrix * model_matrix;
-            unsafe {
-                gl::UniformMatrix4fv(
-                    u_light_matrix.id,
-                    1,
-                    gl::FALSE,
-                    &light_space_mvp.columns(0, 4)[0],
-                );
-            }
-            mesh.draw(
-                &open_gl.program,
-                &open_gl.camera,
-                position.pos,
-                renderable.scale,
-            );
-        }
-    }
-}
-
-struct ShadowSystem;
-impl<'a> System<'a> for ShadowSystem {
-    type SystemData = (
-        ReadStorage<'a, Renderable>,
-        ReadStorage<'a, Position>,
-        ReadStorage<'a, CastsShadow>,
-        Read<'a, MeshMgrResource>,
-        Read<'a, OpenGlResource>,
-        Write<'a, SunResource>,
-    );
-
-    fn run(
-        &mut self,
-        (render_comps, positions, shadow, mesh_mgr, open_gl, mut sun): Self::SystemData,
-    ) {
-        sun.fbo.bind();
-        unsafe {
-            gl::Viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
-            gl::Enable(gl::CULL_FACE);
-            gl::CullFace(gl::FRONT);
-            gl::Clear(gl::DEPTH_BUFFER_BIT)
-        }
-
-        // Use a simple depth shader program
-        sun.shadow_program.set();
-
-        // Compute the camera frustrum corners
-        let mut frustrum = Frustrum::new(0.0, 0.999);
-        frustrum.transform_points(open_gl.camera.inv_proj_view());
-        let mut frustrum_2 = frustrum.clone();
-
-        // Transform the view frustrum corners to light-space (1st time)
-        sun.shadow_camera.position = nalgebra_glm::zero();
-        sun.shadow_camera.lookat = sun.shadow_camera.position - sun.light_dir;
-        let (light_view_matrix, _) = sun.shadow_camera.gen_view_proj_matrices();
-        frustrum.transform_points(light_view_matrix);
-
-        // Calculate an AABB for the view frustrum in light space
-        let mut aabb_light_space = AABB::new();
-        aabb_light_space.expand_to_fit(frustrum.points);
-
-        // Calculate an AABB for the world, in light space
-        let mut world_aabb_light_space = AABB::new();
-        world_aabb_light_space.expand_to_fit([
-            nalgebra_glm::zero(),
-            nalgebra_glm::vec3(CHUNK_SIZE as f32 * 2.0, 0.0, 0.0),
-            nalgebra_glm::vec3(0.0, CHUNK_SIZE as f32 * 2.0, 0.0),
-            nalgebra_glm::vec3(CHUNK_SIZE as f32 * 2.0, CHUNK_SIZE as f32 * 2.0, 0.0),
-            nalgebra_glm::vec3(0.0, 0.0, SCALE),
-            nalgebra_glm::vec3(CHUNK_SIZE as f32 * 2.0, 0.0, SCALE),
-            nalgebra_glm::vec3(0.0, CHUNK_SIZE as f32 * 2.0, SCALE),
-            nalgebra_glm::vec3(CHUNK_SIZE as f32 * 2.0, CHUNK_SIZE as f32 * 2.0, SCALE),
-        ]);
-        world_aabb_light_space.transform(light_view_matrix);
-        aabb_light_space.intersect_z(&world_aabb_light_space);
-
-        // Calculate the mid-point of the near-plane on the light-frustrum
-        let light_pos_light_space = aabb_light_space.pos_z_plane_midpoint();
-        let light_pos_world_space =
-            (nalgebra_glm::inverse(&light_view_matrix)) * light_pos_light_space;
-
-        // Transform the view frustrum to light-space (2nd time)
-        sun.shadow_camera.position = light_pos_world_space.xyz();
-        sun.shadow_camera.lookat = sun.shadow_camera.position - sun.light_dir;
-        let (light_view_matrix, _) = sun.shadow_camera.gen_view_proj_matrices();
-        frustrum_2.transform_points(light_view_matrix);
-
-        // Create an Orthographic Projection (2nd time)
-        let mut aabb_light_space = AABB::new();
-        aabb_light_space.expand_to_fit(frustrum_2.points);
-        sun.shadow_camera.projection_kind = ProjectionKind::Orthographic {
-            left: aabb_light_space.min.x,
-            right: aabb_light_space.max.x,
-            bottom: aabb_light_space.min.y,
-            top: aabb_light_space.max.y,
-            near: aabb_light_space.min.z,
-            far: 800.0,
-        };
-
-        // Render the stuff that casts shadows
-        for (renderable, position, _) in (&render_comps, &positions, &shadow).join() {
-            match renderable.render_dist {
-                Some(d) => {
-                    if nalgebra_glm::length(&(position.pos - open_gl.camera.position)) > d {
-                        continue;
-                    }
-                }
-                None => {}
-            }
-
-            let mesh = mesh_mgr.data.get_mesh(renderable.mesh_id);
-            mesh.draw(
-                &sun.shadow_program,
-                &sun.shadow_camera,
-                position.pos,
-                renderable.scale,
-            );
-        }
-
-        sun.fbo.unbind();
-    }
-}
-
 struct PhysicsSystem;
 impl<'a> System<'a> for PhysicsSystem {
     type SystemData = (
-        WriteStorage<'a, Position>,
-        WriteStorage<'a, Velocity>,
-        Read<'a, TileResource>,
+        WriteStorage<'a, PositionComponent>,
+        WriteStorage<'a, VelocityComponent>,
+        Read<'a, PerlinMapResource>,
     );
     fn run(&mut self, (mut positions, mut velocities, tile): Self::SystemData) {
         for (position, velocity) in (&mut positions, &mut velocities).join() {
             velocity.vel.z -= 0.005 * UNIT_PER_METER; // gravity
             position.pos += velocity.vel;
 
-            let feet_height =
-                get_z_scaled_interpolated(&tile.tiles, position.pos.x, position.pos.y);
+            let feet_height = tile.map.get_z_interpolated(position.pos.x, position.pos.y);
             if position.pos.z <= feet_height {
-                let normal = get_normal(&tile.tiles, position.pos.x, position.pos.y);
+                let normal = tile.map.get_normal(position.pos.x, position.pos.y);
                 let d = feet_height - position.pos.z;
                 velocity.vel += normal * 0.1 * d; // normal from slopes
                 if nalgebra_glm::length(&velocity.vel.xy()) < 0.05 {
@@ -400,14 +167,13 @@ impl<'a> System<'a> for PhysicsSystem {
 struct PlayerSystem;
 impl<'a> System<'a> for PlayerSystem {
     type SystemData = (
-        WriteStorage<'a, Position>,
-        WriteStorage<'a, Velocity>,
-        WriteStorage<'a, Player>,
+        WriteStorage<'a, PositionComponent>,
+        WriteStorage<'a, VelocityComponent>,
+        WriteStorage<'a, PlayerComponent>,
         Read<'a, App>,
         Write<'a, OpenGlResource>,
         Read<'a, AudioResource>,
-        Read<'a, TileResource>,
-        Read<'a, TickResource>,
+        Read<'a, PerlinMapResource>,
         Read<'a, LazyUpdate>,
         Entities<'a>,
     );
@@ -422,7 +188,6 @@ impl<'a> System<'a> for PlayerSystem {
             mut opengl,
             audio,
             tiles,
-            tick,
             lazy,
             entities,
         ): Self::SystemData,
@@ -436,15 +201,14 @@ impl<'a> System<'a> for PlayerSystem {
             let curr_space_state = app.keys[Scancode::Space as usize];
             let curr_shift_state = app.keys[Scancode::LShift as usize];
             let walking = curr_w_state || curr_s_state || curr_a_state || curr_d_state;
-            let swimming = position.pos.z <= 0.5 * SCALE;
-            let walk_speed: f32 = 1.0 * PERSON_HEIGHT / 62.5
-                * if swimming {
-                    1.0
-                } else if curr_shift_state {
-                    2.0
-                } else {
-                    1.0
-                };
+            let swimming = position.pos.z <= 0.5;
+            let walk_speed: f32 = if swimming {
+                1.0
+            } else if curr_shift_state {
+                2.0
+            } else {
+                1.0
+            };
             let view_speed: f32 = 0.01;
             let facing_vec = nalgebra_glm::vec3(
                 player.facing.cos(),
@@ -471,8 +235,10 @@ impl<'a> System<'a> for PlayerSystem {
             } else if curr_space_state && player.feet_on_ground {
                 velocity.vel.z += 0.1 * UNIT_PER_METER;
                 audio.audio_mgr.play_sound("res/jump.ogg".to_string(), 128);
+                println!("{}", opengl.camera.position);
             } else if walking {
-                velocity.vel += player_vel_vec.normalize() * walk_speed; // Move the player, this way moving diagonal isn't faster
+                // Move the player, this way moving diagonal isn't faster
+                velocity.vel += player_vel_vec.normalize() * walk_speed * PERSON_HEIGHT / 62.5;
             }
             player.facing -= view_speed * app.mouse_rel_x as f32;
             player.pitch = (player.pitch + view_speed * (app.mouse_rel_y as f32))
@@ -481,11 +247,9 @@ impl<'a> System<'a> for PlayerSystem {
 
             opengl.camera.position = position.pos + nalgebra_glm::vec3(0.0, 0.0, PERSON_HEIGHT);
 
-            let feet_height = get_z_scaled_interpolated(
-                &tiles.tiles,
-                opengl.camera.position.x,
-                opengl.camera.position.y,
-            );
+            let feet_height = tiles
+                .map
+                .get_z_interpolated(opengl.camera.position.x, opengl.camera.position.y);
             player.feet_on_ground = opengl.camera.position.z - PERSON_HEIGHT <= feet_height;
             if !player.feet_on_ground {
                 velocity.vel.x *= 0.8;
@@ -499,10 +263,10 @@ impl<'a> System<'a> for PlayerSystem {
             let facing_vec = (rot_matrix * nalgebra_glm::vec4(1.0, 0.0, 0.0, 0.0)).xyz();
             opengl.camera.lookat = opengl.camera.position + facing_vec;
 
-            const SHOT_PERIOD: f32 = 7.8125;
+            const SHOT_PERIOD: usize = 7;
             const SHOT_VEL: f32 = 74.0; // m/s
-            if tick.t - player.t_last_shot > SHOT_PERIOD && app.mouse_left_down {
-                player.t_last_shot = tick.t;
+            if app.ticks - player.t_last_shot > SHOT_PERIOD && app.mouse_left_down {
+                player.t_last_shot = app.ticks;
                 let gun_pos =
                     opengl.camera.position + nalgebra_glm::vec3(0.0, 0.0, -0.5 * UNIT_PER_METER);
                 let convergence = ((opengl.camera.position + facing_vec * 1.0) - gun_pos)
@@ -511,19 +275,19 @@ impl<'a> System<'a> for PlayerSystem {
                 let bullet_entity = entities.create();
                 lazy.insert(
                     bullet_entity,
-                    Renderable {
+                    MeshComponent {
                         mesh_id: 1,
                         scale: nalgebra_glm::vec3(0.01, 0.01, 0.01),
                         texture: Texture::from_png("res/bullet.png"),
                         render_dist: Some(128.0),
                     },
                 );
-                lazy.insert(bullet_entity, Position { pos: gun_pos });
-                lazy.insert(bullet_entity, Velocity { vel: convergence });
-                lazy.insert(bullet_entity, Projectile {});
+                lazy.insert(bullet_entity, PositionComponent { pos: gun_pos });
+                lazy.insert(bullet_entity, VelocityComponent { vel: convergence });
+                lazy.insert(bullet_entity, ProjectileComponent {});
                 lazy.insert(
                     bullet_entity,
-                    Collidable {
+                    CollidableComponent {
                         aabb: AABB::from_min_max(
                             nalgebra_glm::vec3(-0.005, -0.005, -0.005),
                             nalgebra_glm::vec3(0.005, 0.005, 0.005),
@@ -532,35 +296,29 @@ impl<'a> System<'a> for PlayerSystem {
                 );
                 audio.audio_mgr.play_sound("res/pop.ogg".to_string(), 128);
             }
-            const WALK_PERIOD: f32 = 0.088512;
+            // 107 steps per minute
+            // 60 seconds per 107 steps
+            // 0.56 seconds per step
+            // 35 ticks per step
             if walking
                 && player.feet_on_ground
-                && tick.t - player.t_last_walk_played > (WALK_PERIOD / walk_speed)
+                && (app.ticks - player.t_last_walk_played) > 35 / walk_speed as usize
             {
-                player.t_last_walk_played = tick.t;
+                player.t_last_walk_played = app.ticks;
                 audio.audio_mgr.play_sound("res/walk.ogg".to_string(), 35);
             }
         }
     }
 }
 
-struct TickSystem;
-impl<'a> System<'a> for TickSystem {
-    type SystemData = Write<'a, TickResource>;
-
-    fn run(&mut self, mut tick_res: Self::SystemData) {
-        tick_res.t += 1.0;
-    }
-}
-
 struct TreasureSystem;
 impl<'a> System<'a> for TreasureSystem {
     type SystemData = (
-        WriteStorage<'a, TreasureMap>,
-        WriteStorage<'a, Quad>,
-        ReadStorage<'a, Position>,
-        ReadStorage<'a, Velocity>,
-        ReadStorage<'a, Player>,
+        WriteStorage<'a, TreasureMapComponent>,
+        WriteStorage<'a, QuadComponent>,
+        ReadStorage<'a, PositionComponent>,
+        ReadStorage<'a, VelocityComponent>,
+        ReadStorage<'a, PlayerComponent>,
         Read<'a, OpenGlResource>,
         Read<'a, AudioResource>,
         Entities<'a>,
@@ -617,9 +375,9 @@ impl<'a> System<'a> for TreasureSystem {
 struct MobSystem;
 impl<'a> System<'a> for MobSystem {
     type SystemData = (
-        ReadStorage<'a, Position>,
-        WriteStorage<'a, Velocity>,
-        ReadStorage<'a, Mob>,
+        ReadStorage<'a, PositionComponent>,
+        WriteStorage<'a, VelocityComponent>,
+        ReadStorage<'a, MobComponent>,
         Read<'a, OpenGlResource>,
     );
 
@@ -639,9 +397,9 @@ impl<'a> System<'a> for MobSystem {
 struct ProjectileSystem;
 impl<'a> System<'a> for ProjectileSystem {
     type SystemData = (
-        WriteStorage<'a, Position>,
-        WriteStorage<'a, Projectile>,
-        Read<'a, TileResource>,
+        WriteStorage<'a, PositionComponent>,
+        WriteStorage<'a, ProjectileComponent>,
+        Read<'a, PerlinMapResource>,
         Read<'a, AudioResource>,
         Read<'a, OpenGlResource>,
         Entities<'a>,
@@ -652,8 +410,7 @@ impl<'a> System<'a> for ProjectileSystem {
         (mut positions, mut projectiles, tile, audio, opengl, entities): Self::SystemData,
     ) {
         for (position, _, entity) in (&mut positions, &mut projectiles, &entities).join() {
-            let tile_z: f32 =
-                get_z_scaled_interpolated(&tile.tiles, position.pos.x, position.pos.y);
+            let tile_z: f32 = tile.map.get_z_interpolated(position.pos.x, position.pos.y);
             if position.pos.z < tile_z {
                 entities.delete(entity).unwrap();
                 let distance = nalgebra_glm::length(&(opengl.camera.position - position.pos));
@@ -669,13 +426,13 @@ impl<'a> System<'a> for ProjectileSystem {
 struct CollisionSystem;
 impl<'a> System<'a> for CollisionSystem {
     type SystemData = (
-        ReadStorage<'a, Position>,
-        WriteStorage<'a, Velocity>,
-        WriteStorage<'a, Health>,
-        ReadStorage<'a, Projectile>,
-        ReadStorage<'a, Mob>,
-        ReadStorage<'a, Collidable>,
-        Read<'a, TileResource>,
+        ReadStorage<'a, PositionComponent>,
+        WriteStorage<'a, VelocityComponent>,
+        WriteStorage<'a, HealthComponent>,
+        ReadStorage<'a, ProjectileComponent>,
+        ReadStorage<'a, MobComponent>,
+        ReadStorage<'a, CollidableComponent>,
+        Read<'a, PerlinMapResource>,
         Read<'a, AudioResource>,
         Entities<'a>,
     );
@@ -716,11 +473,9 @@ impl<'a> System<'a> for CollisionSystem {
                     entities.delete(*proj_entity).unwrap();
                     mob_velocity.vel.x += proj_velocity.x;
                     mob_velocity.vel.y += proj_velocity.y;
-                    let tile_z: f32 = get_z_scaled_interpolated(
-                        &tiles.tiles,
-                        mob_position.pos.x,
-                        mob_position.pos.y,
-                    );
+                    let tile_z: f32 = tiles
+                        .map
+                        .get_z_interpolated(mob_position.pos.x, mob_position.pos.y);
                     if mob_position.pos.z + 0.01 <= tile_z {
                         mob_velocity.vel.z += 0.1 * UNIT_PER_METER;
                     }
@@ -734,7 +489,7 @@ impl<'a> System<'a> for CollisionSystem {
 
 struct HealthSystem;
 impl<'a> System<'a> for HealthSystem {
-    type SystemData = WriteStorage<'a, Health>;
+    type SystemData = WriteStorage<'a, HealthComponent>;
 
     fn run(&mut self, mut healths: Self::SystemData) {
         for health in (&mut healths).join() {
@@ -746,11 +501,11 @@ impl<'a> System<'a> for HealthSystem {
 struct MobDeathSystem;
 impl<'a> System<'a> for MobDeathSystem {
     type SystemData = (
-        WriteStorage<'a, Health>,
-        ReadStorage<'a, Mob>,
-        WriteStorage<'a, DeathSplishAnim>,
-        WriteStorage<'a, Collidable>,
-        WriteStorage<'a, CastsShadow>,
+        WriteStorage<'a, HealthComponent>,
+        ReadStorage<'a, MobComponent>,
+        WriteStorage<'a, DeathSplishAnimComponent>,
+        WriteStorage<'a, CollidableComponent>,
+        WriteStorage<'a, CastsShadowComponent>,
         Read<'a, AudioResource>,
         Entities<'a>,
     );
@@ -771,7 +526,7 @@ impl<'a> System<'a> for MobDeathSystem {
         for (health, _mob, entity) in (&healths, &mobs, &entities).join() {
             if health.health <= 0.0 {
                 death_splish_anims
-                    .insert(entity, DeathSplishAnim { timeline: 0.0 })
+                    .insert(entity, DeathSplishAnimComponent { timeline: 0.0 })
                     .unwrap();
                 removed_entities.push(entity);
             }
@@ -784,11 +539,12 @@ impl<'a> System<'a> for MobDeathSystem {
         }
     }
 }
+
 struct DeathSplishAnimSystem;
 impl<'a> System<'a> for DeathSplishAnimSystem {
     type SystemData = (
-        WriteStorage<'a, Renderable>,
-        WriteStorage<'a, DeathSplishAnim>,
+        WriteStorage<'a, MeshComponent>,
+        WriteStorage<'a, DeathSplishAnimComponent>,
         Entities<'a>,
     );
 
@@ -814,9 +570,9 @@ impl<'a> System<'a> for DeathSplishAnimSystem {
 struct CylindricalCollisionSystem;
 impl<'a> System<'a> for CylindricalCollisionSystem {
     type SystemData = (
-        ReadStorage<'a, CylinderRadius>,
-        ReadStorage<'a, Position>,
-        WriteStorage<'a, Velocity>,
+        ReadStorage<'a, CylinderRadiusComponent>,
+        ReadStorage<'a, PositionComponent>,
+        WriteStorage<'a, VelocityComponent>,
         Entities<'a>,
     );
 
@@ -871,25 +627,24 @@ impl Island {
     pub fn new() -> Self {
         // Setup ECS the world
         let mut world = World::new();
-        world.register::<Position>();
-        world.register::<Velocity>();
-        world.register::<Renderable>();
-        world.register::<Player>();
-        world.register::<CastsShadow>();
-        world.register::<TreasureMap>();
-        world.register::<Mob>();
-        world.register::<Projectile>();
-        world.register::<Collidable>();
-        world.register::<Health>();
-        world.register::<CylinderRadius>();
-        world.register::<DeathSplishAnim>();
+        world.register::<PositionComponent>();
+        world.register::<VelocityComponent>();
+        world.register::<MeshComponent>();
+        world.register::<PlayerComponent>();
+        world.register::<CastsShadowComponent>();
+        world.register::<TreasureMapComponent>();
+        world.register::<MobComponent>();
+        world.register::<ProjectileComponent>();
+        world.register::<CollidableComponent>();
+        world.register::<HealthComponent>();
+        world.register::<CylinderRadiusComponent>();
+        world.register::<DeathSplishAnimComponent>();
 
         // Setup the dispatchers
         let mut update_dispatcher_builder = DispatcherBuilder::new();
         update_dispatcher_builder.add(PlayerSystem, "player system", &[]);
         update_dispatcher_builder.add(CylindricalCollisionSystem, "cylinder collision system", &[]);
         update_dispatcher_builder.add(PhysicsSystem, "physics system", &[]);
-        update_dispatcher_builder.add(TickSystem, "tick system", &[]);
         update_dispatcher_builder.add(TreasureSystem, "treasure system", &[]);
         update_dispatcher_builder.add(MobSystem, "mob system", &[]);
         update_dispatcher_builder.add(ProjectileSystem, "projectile system", &[]);
@@ -901,34 +656,40 @@ impl Island {
         let mut render_dispatcher_builder = DispatcherBuilder::new();
         render_dispatcher_builder.add(SkySystem, "sky system", &[]);
         render_dispatcher_builder.add(ShadowSystem, "shadow system", &[]);
-        render_dispatcher_builder.add(RenderSystem, "render system", &[]);
+        render_dispatcher_builder.add(Render3dSystem, "render system", &[]);
 
         let mut ui_render_dispatcher_builder = DispatcherBuilder::new();
         initialize_gui(&mut world, &mut ui_render_dispatcher_builder);
 
         // Setup island map
-        let mut rng = rand::thread_rng();
-        let mut map = generate(MAP_SIZE, 0.05, rng.gen());
-        let mut map2 = generate(MAP_SIZE, 0.03, rng.gen());
-        let mut map3 = generate(MAP_SIZE, 0.01, rng.gen());
-        let mut map4 = generate(MAP_SIZE, 0.006, rng.gen());
-        normalize(&mut map);
-        normalize(&mut map2);
-        normalize(&mut map3);
-        normalize(&mut map4);
-        for i in 0..map2.len() {
-            map[i] *= map2[i] * map3[i] * map4[i];
+        println!("Setting up island...");
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0);
+        let mut map = PerlinMap::new(MAP_SIZE, 0.01, rng.gen());
+        let mut amplitude = 0.01;
+        let mut part = 0.5;
+        for i in 0..10 {
+            println!("  - {}/10", i);
+            let mut other_map = PerlinMap::new(MAP_SIZE, amplitude, rng.gen());
+            other_map.normalize();
+            for i in 0..other_map.data.len() {
+                map.data[i] += (2.0 * other_map.data[i] - 1.0) * part;
+            }
+            amplitude *= 2.0;
+            part *= 0.5;
         }
-        normalize(&mut map);
+        println!("Creating bulge...");
         create_bulge(&mut map);
-        erosion(&mut map, MAP_SIZE, 1024.0);
-        let height = get_z_scaled_interpolated(&map, (MAP_SIZE / 2) as f32, (MAP_SIZE / 2) as f32);
+        for i in 0..map.data.len() {
+            map.data[i] = ((map.data[i] - 0.5) * 0.35) + 0.5;
+        }
+        println!("Eroding...");
+        let moist_map = map.erode(100 as f32, rng.gen());
+        let height = map.get_z_interpolated((MAP_SIZE / 2) as f32, (MAP_SIZE / 2) as f32);
         let mut spawn_point =
             nalgebra_glm::vec3((MAP_SIZE / 2) as f32, (MAP_SIZE / 2) as f32, height);
         for y in 0..MAP_SIZE / 2 {
-            let height =
-                get_z_scaled_interpolated(&map, (MAP_SIZE / 2) as f32, (y + MAP_SIZE / 2) as f32);
-            if height >= 0.5 * SCALE {
+            let height = map.get_z_interpolated((MAP_SIZE / 2) as f32, (y + MAP_SIZE / 2) as f32);
+            if height >= 0.5 {
                 spawn_point =
                     nalgebra_glm::vec3((MAP_SIZE / 2) as f32, (y + MAP_SIZE / 2) as f32, height);
                 break;
@@ -958,55 +719,58 @@ impl Island {
             nalgebra_glm::vec3(1.0, 1.0, 1.0),
         ));
 
-        let depth_map = Texture::new();
-        depth_map.load_depth_buffer(SHADOW_SIZE, SHADOW_SIZE);
-        let fbo = Fbo::new();
-        fbo.bind();
-        depth_map.post_bind();
-
         // Add entities
         for chunk_y in (0..(MAP_SIZE)).step_by(CHUNK_SIZE) {
             for chunk_x in (0..(MAP_SIZE)).step_by(CHUNK_SIZE) {
-                let (i, v, n, u, c) = create_mesh(&map, chunk_x, chunk_y);
+                let (i, v, n, u, c) = create_mesh(&map, &moist_map, chunk_x, chunk_y);
                 let grass_mesh = mesh_mgr.add_mesh(Mesh::new(i, vec![v, n, u, c]));
                 world
                     .create_entity()
-                    .with(Renderable {
+                    .with(MeshComponent {
                         mesh_id: grass_mesh,
                         scale: nalgebra_glm::vec3(1.0, 1.0, 1.0),
                         texture: Texture::from_png("res/grass.png"),
                         render_dist: Some(CHUNK_SIZE as f32 * 2.0),
                     })
-                    .with(Position {
+                    .with(PositionComponent {
                         pos: nalgebra_glm::vec3(chunk_x as f32, chunk_y as f32, 0.0),
                     })
-                    .with(CastsShadow {})
+                    .with(CastsShadowComponent {})
                     .build();
             }
         }
         world.insert(MeshMgrResource { data: mesh_mgr });
         world
             .create_entity()
-            .with(Renderable {
+            .with(MeshComponent {
                 mesh_id: quad_mesh,
                 scale: nalgebra_glm::vec3(1000.0, 1000.0, 1000.0),
                 texture: Texture::from_png("res/water.png"),
                 render_dist: None,
             })
-            .with(Position {
-                pos: nalgebra_glm::vec3(0.0, 0.0, SCALE * 0.5),
+            .with(PositionComponent {
+                pos: nalgebra_glm::vec3(0.0, 0.0, 0.5),
             })
             .build();
         world
             .create_entity()
-            .with(Quad::from_text(
+            .with(QuadComponent::from_text(
                 "+",
-                font,
+                &font,
                 Color::RGBA(255, 255, 255, 255),
                 quad_mesh,
             ))
             .build();
-        for _ in 0..(MAP_SIZE) {
+        world
+            .create_entity()
+            .with(QuadComponent::from_text(
+                "Collect all maps to win!",
+                &font,
+                Color::RGBA(255, 255, 255, 255),
+                quad_mesh,
+            ))
+            .build();
+        for _ in 0..(MAP_SIZE * 2) {
             // Add all the trees
             let mut attempts = 0;
             loop {
@@ -1014,24 +778,26 @@ impl Island {
                     rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
                     rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
                 );
-                let height = get_z_scaled_interpolated(&map, x, y);
-                let dot_prod = get_dot_prod(&map, x, y).abs();
+                let height = map.get_z_interpolated(x, y);
+                let dot_prod = map.get_dot_prod(x, y).abs();
                 let variation = rng.gen_range(0.0..1.0);
-                let scale = (15.0 + 30.0 * variation) * UNIT_PER_METER;
-                if height >= SCALE && dot_prod > 0.99 {
+                let vegatation =
+                    (moist_map[(x) as usize + MAP_SIZE * (y) as usize] * 0.1).clamp(0.0, 1.0);
+                let scale = (15.0 + 30.0 * vegatation * variation) * UNIT_PER_METER;
+                if height >= 1.0 && dot_prod > 0.99 && vegatation > 0.3 {
                     world
                         .create_entity()
-                        .with(Renderable {
+                        .with(MeshComponent {
                             mesh_id: tree_mesh,
                             scale: nalgebra_glm::vec3(scale, scale, scale),
                             texture: Texture::from_png("res/tree.png"),
-                            render_dist: Some(128.0),
+                            render_dist: Some(CHUNK_SIZE as f32),
                         })
-                        .with(Position {
+                        .with(PositionComponent {
                             pos: nalgebra_glm::vec3(x, y, height),
                         })
-                        .with(CastsShadow {})
-                        .with(CylinderRadius {
+                        .with(CastsShadowComponent {})
+                        .with(CylinderRadiusComponent {
                             radius: 0.06 * scale,
                         })
                         .build();
@@ -1051,13 +817,17 @@ impl Island {
                     rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
                     rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
                 );
-                let height = get_z_scaled_interpolated(&map, x, y);
-                let dot_prod = get_dot_prod(&map, x, y).abs();
+                let height = map.get_z_interpolated(x, y);
+                let dot_prod = map.get_dot_prod(x, y).abs();
                 let variation = rng.gen_range(0.0..1.0);
-                if height >= 0.66 * SCALE && dot_prod >= 0.8 && dot_prod <= 0.9 {
+                if height >= 0.66
+                    && dot_prod >= 0.8
+                    && dot_prod <= 0.9
+                    && moist_map[(x) as usize + MAP_SIZE * (y) as usize] > 1.0
+                {
                     world
                         .create_entity()
-                        .with(Renderable {
+                        .with(MeshComponent {
                             mesh_id: bush_mesh,
                             scale: nalgebra_glm::vec3(
                                 (3.5 + 7.0 * variation) * UNIT_PER_METER,
@@ -1065,12 +835,12 @@ impl Island {
                                 (3.5 + 7.0 * variation) * UNIT_PER_METER,
                             ),
                             texture: Texture::from_png("res/tree.png"),
-                            render_dist: Some(128.0),
+                            render_dist: Some(CHUNK_SIZE as f32 * 2.0),
                         })
-                        .with(Position {
+                        .with(PositionComponent {
                             pos: nalgebra_glm::vec3(x, y, height),
                         })
-                        .with(CastsShadow {})
+                        .with(CastsShadowComponent {})
                         .build();
                     break;
                 }
@@ -1089,41 +859,40 @@ impl Island {
                     rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
                     rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
                 );
-                let height = get_z_scaled_interpolated(&map, treasure_x, treasure_y);
-                let dot_prod = get_dot_prod(&map, treasure_x, treasure_y).abs();
-                if height >= 0.5 * SCALE
-                    && height <= 0.8 * SCALE
-                    && height / SCALE < 0.75 * dot_prod
-                {
+                let height = map.get_z_interpolated(treasure_x, treasure_y);
+                let dot_prod = map.get_dot_prod(treasure_x, treasure_y).abs();
+                if height >= 0.5 && height <= 0.8 && height < 0.75 * dot_prod {
                     // Add treasure
                     let treasure_entity = world
                         .create_entity()
-                        .with(Renderable {
+                        .with(MeshComponent {
                             mesh_id: chest_mesh,
                             scale: nalgebra_glm::vec3(0.05, 0.05, 0.05),
                             texture: Texture::from_png("res/chest.png"),
-                            render_dist: Some(128.0),
+                            render_dist: Some(CHUNK_SIZE as f32 * 2.0),
                         })
-                        .with(Position {
+                        .with(PositionComponent {
                             pos: nalgebra_glm::vec3(treasure_x, treasure_y, height),
                         })
-                        .with(CastsShadow {})
+                        .with(CastsShadowComponent {})
                         .build();
                     // Add corresponding map
                     world
                         .create_entity()
-                        .with(Quad::from_texture(
+                        .with(QuadComponent::from_texture(
                             Texture::from_png("res/map.png"),
-                            nalgebra_glm::vec3(
-                                (i as f32) / (NUM_TREASURE as f32 - 1.0) - 0.5,
-                                0.9,
-                                0.0,
-                            ),
                             32,
                             32,
                             quad_mesh,
                         ))
-                        .with(TreasureMap {
+                        .with(PositionComponent {
+                            pos: nalgebra_glm::vec3(
+                                (i as f32) / (NUM_TREASURE as f32 - 1.0) - 0.5,
+                                0.9,
+                                0.0,
+                            ),
+                        })
+                        .with(TreasureMapComponent {
                             treasure_entity,
                             found: false,
                         })
@@ -1138,28 +907,28 @@ impl Island {
                         );
                         world
                             .create_entity()
-                            .with(Renderable {
+                            .with(MeshComponent {
                                 mesh_id: mob_mesh,
                                 scale: nalgebra_glm::vec3(1.0, 1.0, 1.0),
                                 texture: Texture::from_png("res/ghost.png"),
-                                render_dist: Some(128.0),
+                                render_dist: Some(CHUNK_SIZE as f32 * 2.0),
                             })
-                            .with(Position {
+                            .with(PositionComponent {
                                 pos: nalgebra_glm::vec3(x, y, height),
                             })
-                            .with(Velocity {
+                            .with(VelocityComponent {
                                 vel: nalgebra_glm::zero(),
                             })
-                            .with(CastsShadow {})
-                            .with(Mob {})
-                            .with(Collidable {
+                            .with(CastsShadowComponent {})
+                            .with(MobComponent {})
+                            .with(CollidableComponent {
                                 aabb: AABB::from_min_max(
                                     nalgebra_glm::vec3(-0.05, -0.05, 0.0),
                                     nalgebra_glm::vec3(0.05, 0.05, 0.2),
                                 ),
                             })
-                            .with(Health { health: 1.0 })
-                            .with(CylinderRadius { radius: 0.05 })
+                            .with(HealthComponent { health: 1.0 })
+                            .with(CylinderRadiusComponent { radius: 0.05 })
                             .build();
                     }
                     break;
@@ -1173,25 +942,25 @@ impl Island {
         // Add the player
         world
             .create_entity()
-            .with(Renderable {
+            .with(MeshComponent {
                 mesh_id: mob_mesh,
                 scale: nalgebra_glm::vec3(1.0, 1.0, 1.0),
                 texture: Texture::from_png("res/tree.png"),
-                render_dist: Some(128.0),
+                render_dist: Some(-1.0),
             })
-            .with(CastsShadow {})
-            .with(Player {
+            .with(CastsShadowComponent {})
+            .with(PlayerComponent {
                 feet_on_ground: true,
                 facing: 3.14,
                 pitch: 0.0,
-                t_last_shot: 0.0,
-                t_last_walk_played: 0.0,
+                t_last_shot: 0,
+                t_last_walk_played: 0,
             })
-            .with(Position { pos: spawn_point })
-            .with(Velocity {
+            .with(PositionComponent { pos: spawn_point })
+            .with(VelocityComponent {
                 vel: nalgebra_glm::zero(),
             })
-            .with(CylinderRadius { radius: 0.03 })
+            .with(CylinderRadiusComponent { radius: 0.03 })
             .build();
 
         // Add resources
@@ -1199,11 +968,10 @@ impl Island {
         world.insert(AudioResource {
             audio_mgr: AudioManager::new(),
         });
-        world.insert(TickResource { t: 0.0 });
         world.insert(OpenGlResource {
             camera: Camera::new(
                 spawn_point,
-                nalgebra_glm::vec3(MAP_SIZE as f32 / 2.0, MAP_SIZE as f32 / 2.0, SCALE / 2.0),
+                nalgebra_glm::vec3(MAP_SIZE as f32 / 2.0, MAP_SIZE as f32 / 2.0, 0.5),
                 nalgebra_glm::vec3(0.0, 0.0, 1.0),
                 ProjectionKind::Perspective { fov: 0.9 },
             ),
@@ -1233,12 +1001,12 @@ impl Island {
             )
             .unwrap(),
         });
-        world.insert(TileResource { tiles: map });
+        world.insert(PerlinMapResource { map });
         let sun_scale = 30.0;
-        world.insert(SunResource {
-            shadow_camera: Camera::new(
-                nalgebra_glm::vec3(MAP_SIZE as f32 / -2.0, 0.0, SCALE * 2.0),
-                nalgebra_glm::vec3(MAP_SIZE as f32 / 2.0, MAP_SIZE as f32 / 2.0, SCALE * 0.5),
+        world.insert(SunResource::new(
+            Camera::new(
+                nalgebra_glm::vec3(MAP_SIZE as f32 / -2.0, 0.0, 2.0),
+                nalgebra_glm::vec3(MAP_SIZE as f32 / 2.0, MAP_SIZE as f32 / 2.0, 0.5),
                 nalgebra_glm::vec3(0.0, 0.0, 1.0),
                 ProjectionKind::Orthographic {
                     left: -sun_scale,
@@ -1249,15 +1017,13 @@ impl Island {
                     far: 5000.0,
                 },
             ),
-            shadow_program: create_program(
+            create_program(
                 include_str!("../shaders/shadow.vert"),
                 include_str!("../shaders/shadow.frag"),
             )
             .unwrap(),
-            fbo,
-            depth_map,
-            light_dir: nalgebra_glm::vec3(0.0, 0.0, 1.0),
-        });
+            nalgebra_glm::vec3(0.0, 0.0, 1.0),
+        ));
 
         Self {
             world,
@@ -1268,38 +1034,26 @@ impl Island {
     }
 }
 
-fn normalize(map: &mut Vec<f32>) {
-    let mut min = f32::MAX;
-    let mut max = f32::MIN;
-
-    for i in 0..map.len() {
-        min = map[i].min(min);
-        max = map[i].max(max);
-    }
-
-    for i in 0..map.len() {
-        map[i] = (map[i] - min) / (max - min)
-    }
-}
-
-fn create_bulge(map: &mut Vec<f32>) {
+fn create_bulge(map: &mut PerlinMap) {
     for y in 0..MAP_SIZE {
         for x in 0..MAP_SIZE {
-            let z = map[x + y * MAP_SIZE];
+            let z = map.data[x + y * MAP_SIZE];
             let xo = (x as f32) - (MAP_SIZE as f32) / 2.0;
             let yo = (y as f32) - (MAP_SIZE as f32) / 2.0;
             let d = ((xo * xo + yo * yo) as f32).sqrt();
             let s: f32 = 0.1; //z * 0.01 + 0.2 - 0.2 * (d / MAP_SIZE as f32); // Tweak me to make the island pointier
             let m: f32 = MAP_SIZE as f32 * 0.8; // Tweak me to make the island wider
-            let bulge: f32 = (1.0 / (2.0 * pi::<f32>() * s.powf(2.0)))
-                * (-((d / m).powf(4.0)) / (2.0 * s.powf(2.0))).exp();
-            map[x + y * MAP_SIZE] = bulge * z;
+                                                // let bulge: f32 = (1.0 / (2.0 * pi::<f32>() * s.powf(2.0)))
+                                                //     * (-((d / m).powf(4.0)) / (2.0 * s.powf(2.0))).exp();
+            let bulge = (-(d - 135.0) / 100.0).min(0.01);
+            map.data[x + y * MAP_SIZE] = 32.0 * z.powf(3.0) + 32.0 * bulge;
         }
     }
 }
 
 fn create_mesh(
-    tiles: &Vec<f32>,
+    map: &PerlinMap,
+    moist_map: &Vec<f32>,
     chunk_x: usize,
     chunk_y: usize,
 ) -> (Vec<u32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
@@ -1317,7 +1071,8 @@ fn create_mesh(
             // Left triangle |\
             let offsets = vec![(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)];
             add_triangle(
-                tiles,
+                map,
+                moist_map,
                 &mut indices,
                 &mut vertices,
                 &mut normals,
@@ -1334,7 +1089,8 @@ fn create_mesh(
             // Right triangle \|
             let offsets = vec![(1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
             add_triangle(
-                tiles,
+                map,
+                moist_map,
                 &mut indices,
                 &mut vertices,
                 &mut normals,
@@ -1354,7 +1110,8 @@ fn create_mesh(
 }
 
 fn add_triangle(
-    tiles: &Vec<f32>,
+    tiles: &PerlinMap,
+    moist_map: &Vec<f32>,
     indices: &mut Vec<u32>,
     vertices: &mut Vec<f32>,
     normals: &mut Vec<f32>,
@@ -1371,10 +1128,10 @@ fn add_triangle(
     let tri_verts: Vec<nalgebra_glm::Vec3> = offsets
         .iter()
         .map(|(xo, yo)| {
-            let z_scaled = get_z_scaled(tiles, (x + xo) as usize, (y + yo) as usize);
-            let mapval = nalgebra_glm::vec3(x + xo, y + yo, z_scaled);
-            sum_z += get_z(tiles, (x + xo) as usize, (y + yo) as usize);
-            add_vertex(vertices, x + xo - chunk_x, y + yo - chunk_y, z_scaled);
+            let z = tiles.get_z((x + xo) as usize, (y + yo) as usize);
+            let mapval = nalgebra_glm::vec3(x + xo, y + yo, z);
+            sum_z += tiles.get_z((x + xo) as usize, (y + yo) as usize);
+            add_vertex(vertices, x + xo - chunk_x, y + yo - chunk_y, z);
             add_uv(uv, *xo as f32, *yo as f32);
             indices.push(*i);
             *i += 1;
@@ -1396,202 +1153,24 @@ fn add_triangle(
 
     let avg_z = sum_z / 3.0;
     for _ in 0..3 {
-        if avg_z < 0.9 * dot_prod {
+        if avg_z < 0.5 || (avg_z < 0.9 * dot_prod && 0.9 < dot_prod) {
             // sand
             colors.push(0.9);
             colors.push(0.8);
             colors.push(0.7);
-        } else if 0.9 >= dot_prod {
+        } else if dot_prod < 0.9 {
             // stone
             colors.push(0.5);
             colors.push(0.45);
             colors.push(0.4);
         } else {
             // grass
-            colors.push(0.27);
-            colors.push(0.36);
-            colors.push(0.19);
+            let moist_val = 1.0 - (moist_map[x as usize + y as usize * MAP_SIZE]).clamp(0.0, 1.0);
+            colors.push(0.27 + moist_val * 0.2);
+            colors.push(0.36 + moist_val * 0.1);
+            colors.push(0.19 + moist_val * 0.05);
         }
     }
-}
-
-fn get_z(tiles: &Vec<f32>, x: usize, y: usize) -> f32 {
-    if x >= MAP_SIZE || y >= MAP_SIZE {
-        return 0.0;
-    }
-    tiles[x + y * MAP_SIZE]
-}
-
-fn get_z_scaled(tiles: &Vec<f32>, x: usize, y: usize) -> f32 {
-    SCALE * get_z(tiles, x, y)
-}
-
-fn get_z_scaled_interpolated(tiles: &Vec<f32>, x: f32, y: f32) -> f32 {
-    assert!(!x.is_nan());
-    // The coordinates of the tile's origin (bottom left corner)
-    let x_origin = x.floor();
-    let y_origin = y.floor();
-
-    // Coordinates inside the tile. [0,1]
-    let x_offset = x - x_origin;
-    let y_offset = y - y_origin;
-
-    let ray_origin = nalgebra_glm::vec3(x, y, 10000.0);
-    let ray_direction = nalgebra_glm::vec3(0.0, 0.0, -1.0);
-
-    if y_offset <= 1.0 - x_offset {
-        // In bottom triangle
-        let (retval, _t) = intersect(
-            nalgebra_glm::vec3(
-                x_origin,
-                y_origin,
-                get_z_scaled(tiles, x_origin as usize, y_origin as usize),
-            ),
-            nalgebra_glm::vec3(
-                x_origin + 1.0,
-                y_origin,
-                get_z_scaled(tiles, x_origin as usize + 1, y_origin as usize),
-            ),
-            nalgebra_glm::vec3(
-                x_origin,
-                y_origin + 1.0,
-                get_z_scaled(tiles, x_origin as usize, y_origin as usize + 1),
-            ),
-            ray_origin,
-            ray_direction,
-        )
-        .unwrap();
-        retval.z
-    } else {
-        // In top triangle
-        let (retval, _t) = intersect(
-            nalgebra_glm::vec3(
-                x_origin + 1.0,
-                y_origin,
-                get_z_scaled(tiles, x_origin as usize + 1, y_origin as usize),
-            ),
-            nalgebra_glm::vec3(
-                x_origin + 1.0,
-                y_origin + 1.0,
-                get_z_scaled(tiles, x_origin as usize + 1, y_origin as usize + 1),
-            ),
-            nalgebra_glm::vec3(
-                x_origin,
-                y_origin + 1.0,
-                get_z_scaled(tiles, x_origin as usize, y_origin as usize + 1),
-            ),
-            ray_origin,
-            ray_direction,
-        )
-        .unwrap();
-        retval.z
-    }
-}
-
-fn get_normal(tiles: &Vec<f32>, x: f32, y: f32) -> nalgebra_glm::Vec3 {
-    assert!(!x.is_nan());
-    // The coordinates of the tile's origin (bottom left corner)
-    let x_origin = x.floor();
-    let y_origin = y.floor();
-
-    // Coordinates inside the tile. [0,1]
-    let x_offset = x - x_origin;
-    let y_offset = y - y_origin;
-
-    if y_offset <= 1.0 - x_offset {
-        // In bottom triangle
-        tri_normal(
-            nalgebra_glm::vec3(
-                x_origin,
-                y_origin,
-                get_z_scaled(tiles, x_origin as usize, y_origin as usize),
-            ),
-            nalgebra_glm::vec3(
-                x_origin + 1.0,
-                y_origin,
-                get_z_scaled(tiles, x_origin as usize + 1, y_origin as usize),
-            ),
-            nalgebra_glm::vec3(
-                x_origin,
-                y_origin + 1.0,
-                get_z_scaled(tiles, x_origin as usize, y_origin as usize + 1),
-            ),
-        )
-    } else {
-        // In top triangle
-        tri_normal(
-            nalgebra_glm::vec3(
-                x_origin + 1.0,
-                y_origin,
-                get_z_scaled(tiles, x_origin as usize + 1, y_origin as usize),
-            ),
-            nalgebra_glm::vec3(
-                x_origin + 1.0,
-                y_origin + 1.0,
-                get_z_scaled(tiles, x_origin as usize + 1, y_origin as usize + 1),
-            ),
-            nalgebra_glm::vec3(
-                x_origin,
-                y_origin + 1.0,
-                get_z_scaled(tiles, x_origin as usize, y_origin as usize + 1),
-            ),
-        )
-    }
-}
-
-fn get_dot_prod(tiles: &Vec<f32>, x: f32, y: f32) -> f32 {
-    assert!(!x.is_nan());
-
-    nalgebra_glm::dot(&get_normal(tiles, x, y), &nalgebra_glm::vec3(0.0, 0.0, 1.0))
-}
-
-fn tri_normal(
-    v0: nalgebra_glm::Vec3,
-    v1: nalgebra_glm::Vec3,
-    v2: nalgebra_glm::Vec3,
-) -> nalgebra_glm::Vec3 {
-    let edge1 = v1 - v0;
-    let edge2 = v2 - v0;
-    let normal = nalgebra_glm::cross(&edge1, &edge2).normalize();
-    normal
-}
-
-fn intersect(
-    v0: nalgebra_glm::Vec3,
-    v1: nalgebra_glm::Vec3,
-    v2: nalgebra_glm::Vec3,
-    ray_origin: nalgebra_glm::Vec3,
-    ray_direction: nalgebra_glm::Vec3,
-) -> Option<(nalgebra_glm::Vec3, f32)> {
-    const EPSILON: f32 = 0.0000001;
-    let edge1 = v1 - v0;
-    let edge2 = v2 - v0;
-    let h = nalgebra_glm::cross(&ray_direction, &edge2);
-    let a = nalgebra_glm::dot(&edge1, &h);
-
-    if a.abs() < EPSILON {
-        return None; // Ray is parallel to the triangle
-    }
-
-    let f = 1.0 / a;
-    let s = ray_origin - v0;
-    let u = f * nalgebra_glm::dot(&s, &h);
-
-    if u < 0.0 || u > 1.0 {
-        return None;
-    }
-
-    let q = nalgebra_glm::cross(&s, &edge1);
-    let v = f * nalgebra_glm::dot(&ray_direction, &q);
-
-    if v < 0.0 || u + v > 1.0 {
-        return None;
-    }
-
-    let t = f * nalgebra_glm::dot(&edge2, &q);
-
-    let intersection_point = ray_origin + t * ray_direction;
-    Some((intersection_point, t))
 }
 
 fn add_vertex(vertices: &mut Vec<f32>, x: f32, y: f32, z: f32) {

@@ -1,6 +1,9 @@
-use super::{camera::Camera, objects::*};
+use crate::App;
+
+use super::{camera::Camera, objects::*, physics::PositionComponent, shadow_map::SunResource};
 
 use obj::{load_obj, Obj, TexturedVertex};
+use specs::{Component, DenseVecStorage, Join, Read, ReadStorage, System, Write};
 
 pub struct Input {
     ibo: Ibo,
@@ -198,4 +201,89 @@ impl MeshMgr {
 #[derive(Default)]
 pub struct MeshMgrResource {
     pub data: MeshMgr,
+}
+
+#[derive(Default)]
+pub struct OpenGlResource {
+    pub camera: Camera,
+    pub program: Program,
+}
+
+#[derive(Component)]
+#[storage(DenseVecStorage)]
+pub struct MeshComponent {
+    pub mesh_id: usize,
+    pub scale: nalgebra_glm::Vec3,
+    pub texture: Texture,
+    pub render_dist: Option<f32>, //< When Some, only render when the position is this close to the camera
+}
+
+pub struct Render3dSystem;
+impl<'a> System<'a> for Render3dSystem {
+    type SystemData = (
+        ReadStorage<'a, MeshComponent>,
+        ReadStorage<'a, PositionComponent>,
+        Read<'a, App>,
+        Read<'a, MeshMgrResource>,
+        Read<'a, OpenGlResource>,
+        Write<'a, SunResource>,
+    );
+
+    fn run(&mut self, (render_comps, positions, app, mesh_mgr, open_gl, sun): Self::SystemData) {
+        unsafe {
+            gl::Viewport(0, 0, app.screen_width, app.screen_height);
+            gl::Enable(gl::CULL_FACE);
+            gl::CullFace(gl::BACK);
+            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
+        }
+
+        open_gl.program.set();
+
+        for (renderable, position) in (&render_comps, &positions).join() {
+            // Cull models that are too far away
+            match renderable.render_dist {
+                Some(d) => {
+                    if nalgebra_glm::length(&(position.pos - open_gl.camera.position)) > d {
+                        continue;
+                    }
+                }
+                None => {}
+            }
+            // Cull models that are behind the player
+            // (TODO: This is incredibly crude, and models that sorta "reach" into the viewport but whose position is behind the player are eroneously culled)
+            // let view_ray = open_gl.camera.lookat - open_gl.camera.position;
+            // let model_to_player_ray = position.pos - open_gl.camera.position;
+            // if nalgebra_glm::dot(&view_ray, &model_to_player_ray) < 0.0 {
+            //     continue;
+            // }
+
+            let mesh = mesh_mgr.data.get_mesh(renderable.mesh_id);
+            renderable.texture.activate(gl::TEXTURE0);
+            renderable
+                .texture
+                .associate_uniform(open_gl.program.id(), 0, "texture0");
+            sun.depth_map.activate(gl::TEXTURE1);
+            sun.depth_map
+                .associate_uniform(open_gl.program.id(), 1, "shadow_map");
+
+            let u_light_matrix = Uniform::new(open_gl.program.id(), "light_mvp").unwrap();
+            let model_matrix = Mesh::get_model_matrix(position.pos, renderable.scale);
+            let (light_view_matrix, light_proj_matrix) = sun.shadow_camera.gen_view_proj_matrices();
+            let light_space_mvp = light_proj_matrix * light_view_matrix * model_matrix;
+            unsafe {
+                gl::UniformMatrix4fv(
+                    u_light_matrix.id,
+                    1,
+                    gl::FALSE,
+                    &light_space_mvp.columns(0, 4)[0],
+                );
+            }
+            mesh.draw(
+                &open_gl.program,
+                &open_gl.camera,
+                position.pos,
+                renderable.scale,
+            );
+        }
+    }
 }

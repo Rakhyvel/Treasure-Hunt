@@ -7,11 +7,13 @@ use sdl2::{
 };
 use specs::{Component, DispatcherBuilder, VecStorage, World};
 
-use crate::{scenes::island::UIResource, App};
+use crate::App;
 
 use super::{
-    mesh::MeshMgrResource,
-    objects::{Texture, Uniform},
+    camera::Camera,
+    objects::{Program, Texture, Uniform},
+    physics::PositionComponent,
+    render3d::MeshMgrResource,
 };
 
 pub struct FontMgr {
@@ -31,26 +33,27 @@ impl FontMgr {
     }
 }
 
-pub struct Quad {
+#[derive(Default)]
+pub struct UIResource {
+    pub camera: Camera,
+    pub program: Program,
+}
+
+#[derive(Component)]
+#[storage(VecStorage)]
+
+pub struct QuadComponent {
     pub mesh_id: usize,
-    pub position: nalgebra_glm::Vec3,
     pub width: i32,
     pub height: i32,
     pub opacity: f32,
     pub texture: Texture,
 }
 
-impl Quad {
-    pub fn from_texture(
-        texture: Texture,
-        position: nalgebra_glm::Vec3,
-        width: i32,
-        height: i32,
-        quad_mesh_id: usize,
-    ) -> Self {
+impl QuadComponent {
+    pub fn from_texture(texture: Texture, width: i32, height: i32, quad_mesh_id: usize) -> Self {
         Self {
             mesh_id: quad_mesh_id,
-            position,
             width,
             height,
             opacity: 1.0,
@@ -58,7 +61,7 @@ impl Quad {
         }
     }
 
-    pub fn from_text(text: &'static str, font: Font, color: Color, quad_mesh_id: usize) -> Self {
+    pub fn from_text(text: &'static str, font: &Font, color: Color, quad_mesh_id: usize) -> Self {
         let surface = font
             .render(text)
             .blended(color)
@@ -72,7 +75,6 @@ impl Quad {
         let texture = Texture::from_surface(surface);
         Self {
             mesh_id: quad_mesh_id,
-            position: nalgebra_glm::vec3(0.0, 0.0, 0.0),
             width: width as i32,
             height: height as i32,
             opacity: 1.0,
@@ -81,21 +83,18 @@ impl Quad {
     }
 }
 
-impl Component for Quad {
-    type Storage = VecStorage<Self>;
-}
-
 struct QuadSystem;
 impl<'a> System<'a> for QuadSystem {
     type SystemData = (
-        ReadStorage<'a, Quad>,
+        ReadStorage<'a, QuadComponent>,
+        ReadStorage<'a, PositionComponent>,
         Read<'a, MeshMgrResource>,
         Read<'a, App>,
         Read<'a, UIResource>,
     );
 
-    fn run(&mut self, (quads, mesh_mgr, app, open_gl): Self::SystemData) {
-        for quad in quads.join() {
+    fn run(&mut self, (quads, positions, mesh_mgr, app, open_gl): Self::SystemData) {
+        for (quad, position) in (&quads, &positions).join() {
             let mesh = mesh_mgr.data.get_mesh(quad.mesh_id);
             open_gl.program.set();
             quad.texture.activate(gl::TEXTURE0);
@@ -106,7 +105,7 @@ impl<'a> System<'a> for QuadSystem {
             mesh.draw(
                 &open_gl.program,
                 &open_gl.camera,
-                quad.position,
+                position.pos,
                 nalgebra_glm::vec3(
                     (quad.width as f32) / (app.screen_width as f32),
                     (quad.height as f32) / (app.screen_height as f32),
@@ -120,7 +119,7 @@ impl<'a> System<'a> for QuadSystem {
 pub fn initialize_gui(world: &mut World, dispatcher_builder: &mut DispatcherBuilder) {
     // TODO: We will need an update and a render dispatch
     // Register GUI components
-    world.register::<Quad>();
+    world.register::<QuadComponent>();
 
     // Add GUI systems to the dispatcher
     dispatcher_builder.add(QuadSystem, "quad system", &[]);

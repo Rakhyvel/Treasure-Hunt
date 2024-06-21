@@ -92,3 +92,14 @@ impl Drop for AudioManager {
         self.sender.send(SoundCommand::Quit).unwrap();
     }
 }
+
+pub struct AudioResource {
+    pub audio_mgr: AudioManager,
+}
+#[allow(unreachable_code)]
+impl Default for AudioResource {
+    fn default() -> Self {
+        println!("default called, whuh oh!");
+        Self { audio_mgr: todo!() }
+    }
+}

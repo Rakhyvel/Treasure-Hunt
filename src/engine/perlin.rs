@@ -1,3 +1,7 @@
+use std::ops::{AddAssign, Mul};
+
+use rand::{Rng, SeedableRng};
+
 static HASH: [i32; 256] = [
     208, 34, 231, 213, 32, 248, 233, 56, 161, 78, 24, 140, 71, 48, 140, 254, 245, 255, 247, 247,
     40, 185, 248, 251, 245, 28, 124, 204, 204, 76, 36, 1, 107, 28, 234, 163, 202, 224, 245, 128,
@@ -14,17 +18,294 @@ static HASH: [i32; 256] = [
     250, 1, 8, 198, 250, 209, 92, 222, 173, 21, 88, 102, 219,
 ];
 
-pub fn generate(map_size: usize, amplitude: f32, seed: i32) -> Vec<f32> {
-    let mut retval: Vec<f32> = Vec::new();
-    retval.resize(map_size * map_size, 0.0);
+#[derive(Default)]
+pub struct PerlinMap {
+    pub data: Vec<f32>,
+    map_size: usize,
+}
 
-    for y in 0..map_size {
-        for x in 0..map_size {
-            retval[x + y * map_size] = perlin2d(x as f32, y as f32, amplitude, 10, seed);
+#[derive(Default)]
+pub struct PerlinMapResource {
+    pub map: PerlinMap,
+}
+
+impl PerlinMap {
+    pub fn new(map_size: usize, amplitude: f32, seed: i32) -> Self {
+        let mut data: Vec<f32> = Vec::new();
+        data.resize(map_size * map_size, 0.0);
+
+        for y in 0..map_size {
+            for x in 0..map_size {
+                data[x + y * map_size] = perlin2d(x as f32, y as f32, amplitude, 10, seed);
+            }
+        }
+
+        Self { data, map_size }
+    }
+
+    pub fn erode(&mut self, intensity: f32, seed: u64) -> Vec<f32> {
+        let sediment_capacity_factor: f32 = 1.0;
+        let max_sediment_capacity: f32 = 10.0; // small values = more deposit
+        let deposit_speed = 0.01;
+        let erode_speed: f32 = 0.01;
+        let gravity = 50.0;
+        let bulk_influence = 1.0;
+
+        let mut total_eroded: f32 = 0.0;
+
+        let mut map_cmds: Vec<(usize, nalgebra_glm::Vec2, f32)> = Vec::new();
+        let mut vel_map: Vec<nalgebra_glm::Vec2> = Vec::new();
+        let mut moist_map: Vec<f32> = Vec::new();
+        let mut vel_map_cmds: Vec<(usize, nalgebra_glm::Vec2, nalgebra_glm::Vec2)> = Vec::new();
+        for _ in 0..self.data.len() {
+            vel_map.push(nalgebra_glm::vec2(0.0, 0.0));
+            moist_map.push(0.0)
+        }
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+
+        let total = (self.map_size as f32 * intensity) as usize;
+        let mut checkpoint = total / 10;
+        for i in 0..total {
+            if i > checkpoint {
+                checkpoint += total / 10;
+                println!(" - {}%", (i as f32 / total as f32 * 100.0) as usize);
+            }
+            let mut pos = nalgebra_glm::vec2(
+                rng.gen_range(0.0..self.map_size as f32),
+                rng.gen_range(0.0..self.map_size as f32),
+            );
+            let start_pos = pos;
+
+            let mut vel = nalgebra_glm::vec2(0.0, 0.0);
+            let mut sediment = 0.0;
+            let mut total_sediment_changed = 0.0;
+            for _ in 0..(self.map_size / 4) {
+                let node = nalgebra_glm::vec2(pos.x.floor(), pos.y.floor());
+                let droplet_index: usize =
+                    (node.x as i32 + node.y as i32 * self.map_size as i32) as usize;
+                let cell_offset = pos - node;
+                if droplet_index >= self.data.len() - self.map_size - 1 {
+                    break;
+                }
+
+                let old_height = self.get_z_interpolated(pos.x, pos.y);
+                let grad = self.get_normal(pos.x, pos.y);
+                let steepness = nalgebra_glm::length(&grad.xy());
+                let curve = 0.1;
+                let erosion_ease = 1.0 / (steepness.powf(curve) + 1.0).powf(curve)
+                    - (0.5 as f32).powf(curve) * steepness; // How easy is it to erode this substance, given it's angle
+                vel *= erosion_ease; // Provide more friction for rock than for dirt and sand
+                vel += gravity * grad.xy();
+                vel /= if nalgebra_glm::length(&vel) > 0.0 {
+                    nalgebra_glm::length(&vel)
+                } else {
+                    1.0
+                };
+                vel_map_cmds.push((droplet_index, cell_offset, vel));
+                let influence = get_influence(&vel_map, self.map_size, droplet_index, cell_offset);
+                vel += erosion_ease * bulk_influence * influence;
+                let mut dir = vel;
+                let speed = nalgebra_glm::length(&vel);
+                // Guarantee 1-cell movement, and keep the sign. This is somehow different from normalize()... somehow
+                dir /= speed;
+                pos += dir;
+                // Stop simulating droplet if it's not moving or has flowed over edge of map
+                if pos.x <= 0.0
+                    || pos.x >= self.map_size as f32 - 1.0
+                    || pos.y <= 0.0
+                    || pos.y >= self.map_size as f32 - 1.0
+                {
+                    break;
+                }
+                // Find the droplet's new height and calculate the deltaHeight
+                let new_height = self.get_z_interpolated(pos.x, pos.y);
+                let delta_height = new_height - old_height;
+
+                // Calculate the droplet's sediment capacity (higher when moving fast down a slope and contains lots of water)
+                let sediment_capacity: f32 = (sediment_capacity_factor).min(max_sediment_capacity);
+
+                // If carrying more sediment than capacity, or if flowing uphill:
+                let delta_z: f32 = if sediment > sediment_capacity || delta_height > 0.0 {
+                    let deposit_amount =
+                        (sediment - sediment_capacity).max(0.0) * deposit_speed / erosion_ease;
+                    if delta_height > 0.0 {
+                        sediment.min(delta_height * 0.2)
+                    } else {
+                        deposit_amount
+                    }
+                } else {
+                    -(speed.clamp(0.0, 1.0) * erosion_ease * erode_speed)
+                };
+                sediment -= delta_z;
+                total_sediment_changed = 0.1 * speed.abs() / erosion_ease;
+                total_eroded += if delta_z < 0.0 { delta_z } else { 0.0 };
+                map_cmds.push((droplet_index, cell_offset, delta_z));
+                incr_influence(
+                    &mut moist_map,
+                    self.map_size,
+                    droplet_index,
+                    cell_offset,
+                    total_sediment_changed,
+                );
+            }
+            // Update the map every 100 particles
+            if i % 1 == 0 {
+                while map_cmds.len() > 0 {
+                    if let Some((idx, offset, delta_z)) = map_cmds.pop() {
+                        incr_influence(&mut self.data, self.map_size, idx, offset, delta_z);
+                    }
+                }
+                while vel_map_cmds.len() > 0 {
+                    if let Some((idx, offset, vel)) = vel_map_cmds.pop() {
+                        incr_influence(&mut vel_map, self.map_size, idx, offset, vel);
+                    }
+                }
+            }
+        }
+        println!("Total eroded: {}", total_eroded);
+        moist_map
+    }
+
+    pub fn get_z(&self, x: usize, y: usize) -> f32 {
+        if x >= self.map_size || y >= self.map_size {
+            return 0.0;
+        }
+        self.data[x + y * self.map_size]
+    }
+
+    pub fn get_z_interpolated(&self, x: f32, y: f32) -> f32 {
+        assert!(!x.is_nan());
+        // The coordinates of the tile's origin (bottom left corner)
+        let x_origin = x.floor();
+        let y_origin = y.floor();
+
+        // Coordinates inside the tile. [0,1]
+        let x_offset = x - x_origin;
+        let y_offset = y - y_origin;
+
+        let ray_origin = nalgebra_glm::vec3(x, y, 10000.0);
+        let ray_direction = nalgebra_glm::vec3(0.0, 0.0, -1.0);
+
+        if y_offset <= 1.0 - x_offset {
+            // In bottom triangle
+            let (retval, _t) = intersect(
+                nalgebra_glm::vec3(
+                    x_origin,
+                    y_origin,
+                    self.get_z(x_origin as usize, y_origin as usize),
+                ),
+                nalgebra_glm::vec3(
+                    x_origin + 1.0,
+                    y_origin,
+                    self.get_z(x_origin as usize + 1, y_origin as usize),
+                ),
+                nalgebra_glm::vec3(
+                    x_origin,
+                    y_origin + 1.0,
+                    self.get_z(x_origin as usize, y_origin as usize + 1),
+                ),
+                ray_origin,
+                ray_direction,
+            )
+            .unwrap();
+            retval.z
+        } else {
+            // In top triangle
+            let (retval, _t) = intersect(
+                nalgebra_glm::vec3(
+                    x_origin + 1.0,
+                    y_origin,
+                    self.get_z(x_origin as usize + 1, y_origin as usize),
+                ),
+                nalgebra_glm::vec3(
+                    x_origin + 1.0,
+                    y_origin + 1.0,
+                    self.get_z(x_origin as usize + 1, y_origin as usize + 1),
+                ),
+                nalgebra_glm::vec3(
+                    x_origin,
+                    y_origin + 1.0,
+                    self.get_z(x_origin as usize, y_origin as usize + 1),
+                ),
+                ray_origin,
+                ray_direction,
+            )
+            .unwrap();
+            retval.z
         }
     }
 
-    retval
+    pub fn get_normal(&self, x: f32, y: f32) -> nalgebra_glm::Vec3 {
+        assert!(!x.is_nan());
+        // The coordinates of the tile's origin (bottom left corner)
+        let x_origin = x.floor();
+        let y_origin = y.floor();
+
+        // Coordinates inside the tile. [0,1]
+        let x_offset = x - x_origin;
+        let y_offset = y - y_origin;
+
+        if y_offset <= 1.0 - x_offset {
+            // In bottom triangle
+            tri_normal(
+                nalgebra_glm::vec3(
+                    x_origin,
+                    y_origin,
+                    self.get_z(x_origin as usize, y_origin as usize),
+                ),
+                nalgebra_glm::vec3(
+                    x_origin + 1.0,
+                    y_origin,
+                    self.get_z(x_origin as usize + 1, y_origin as usize),
+                ),
+                nalgebra_glm::vec3(
+                    x_origin,
+                    y_origin + 1.0,
+                    self.get_z(x_origin as usize, y_origin as usize + 1),
+                ),
+            )
+        } else {
+            // In top triangle
+            tri_normal(
+                nalgebra_glm::vec3(
+                    x_origin + 1.0,
+                    y_origin,
+                    self.get_z(x_origin as usize + 1, y_origin as usize),
+                ),
+                nalgebra_glm::vec3(
+                    x_origin + 1.0,
+                    y_origin + 1.0,
+                    self.get_z(x_origin as usize + 1, y_origin as usize + 1),
+                ),
+                nalgebra_glm::vec3(
+                    x_origin,
+                    y_origin + 1.0,
+                    self.get_z(x_origin as usize, y_origin as usize + 1),
+                ),
+            )
+        }
+    }
+
+    pub fn get_dot_prod(&self, x: f32, y: f32) -> f32 {
+        assert!(!x.is_nan());
+
+        nalgebra_glm::dot(&self.get_normal(x, y), &nalgebra_glm::vec3(0.0, 0.0, 1.0))
+    }
+
+    pub fn normalize(&mut self) {
+        let mut min = f32::MAX;
+        let mut max = f32::MIN;
+
+        for i in 0..self.data.len() {
+            min = self.data[i].min(min);
+            max = self.data[i].max(max);
+        }
+
+        // stretch to min/max
+        for i in 0..self.data.len() {
+            self.data[i] = (self.data[i] - min) / (max - min);
+        }
+    }
 }
 
 fn perlin2d(x: f32, y: f32, freq: f32, depth: i32, seed: i32) -> f32 {
@@ -72,165 +353,6 @@ fn lin_inter(x: f32, y: f32, s: f32) -> f32 {
     x + s * (y - x)
 }
 
-pub fn erosion(map: &mut Vec<f32>, map_size: usize, intensity: f32) {
-    let sediment_capacity_factor: f32 = 1.0;
-    let max_sediment_capacity: f32 = 1.0; // small values = more deposit
-    let deposit_speed = 0.01;
-    let erode_speed: f32 = 0.01;
-    let evaporate_speed = 0.00001;
-    let gravity = 10.0;
-
-    let mut total_eroded: f32 = 0.0;
-
-    for i in 0..(map_size as f32 * intensity) as usize {
-        let scale = 1.0 / (2.0 * intensity);
-        let mut pos = nalgebra_glm::vec2(
-            scale * i as f32 * (i as f32).cos() + map_size as f32 * 0.5,
-            scale * i as f32 * (i as f32).sin() + map_size as f32 * 0.5,
-        );
-        let mut vel = nalgebra_glm::vec2(0.0, 0.0);
-        let mut water = 1.0;
-        let mut sediment = 0.0;
-        for _ in 0..(map_size / 2) {
-            let node = nalgebra_glm::vec2(pos.x.floor(), pos.y.floor());
-            let droplet_index = (node.x as i32 + node.y as i32 * map_size as i32) as usize;
-            let cell_offset = pos - node;
-            if droplet_index >= map.len() - map_size - 1 {
-                break;
-            }
-
-            let grad = get_normal(map, map_size, pos.x, pos.y);
-            let erosion_ease = 1.0 / (nalgebra_glm::length(&grad.xy()) + 1.0).powf(2.0); // How easy is it to erode this substance, given it's angle
-            vel *= erosion_ease; // Provide more friction for rock than for dirt and sand
-            vel += gravity * grad.xy();
-            let mut dir = vel;
-            let len = vel.x.max(vel.y);
-            if len != 0.0 {
-                dir /= len; // This is (somehow) not the same as nalgebra_glm::normalize()
-            }
-            pos += dir;
-
-            // Stop simulating droplet if it's not moving or has flowed over edge of map
-            if (vel.x <= 0.1 && vel.y <= 0.1)
-                || pos.x <= 0.0
-                || pos.x >= map_size as f32 - 1.0
-                || pos.y <= 0.0
-                || pos.y >= map_size as f32 - 1.0
-            {
-                break;
-            }
-
-            // Find the droplet's new height and calculate the deltaHeight
-            let new_height = get_z_scaled_interpolated(map, map_size, pos.x, pos.y);
-            let delta_height = new_height - grad.z;
-
-            // Calculate the droplet's sediment capacity (higher when moving fast down a slope and contains lots of water)
-            let speed = nalgebra_glm::length(&vel);
-            let sediment_capacity: f32 =
-                (speed * water * sediment_capacity_factor).min(max_sediment_capacity);
-
-            let delta_z: f32 =
-            // If carrying more sediment than capacity, or if flowing uphill:
-            if sediment > sediment_capacity || delta_height > 0.0 {
-                let deposit_amount = (sediment_capacity - sediment) * deposit_speed;
-                if delta_height > 0.0 {
-                    delta_height.min(deposit_amount)
-                } else {
-                    deposit_amount
-                }
-            } else {
-                -(erosion_ease * erode_speed).min(delta_height.abs())
-            };
-            sediment -= delta_z;
-            total_eroded += if delta_z < 0.0 { delta_z } else { 0.0 };
-            map[droplet_index] += delta_z * (1.0 - cell_offset.x) * (1.0 - cell_offset.y);
-            map[droplet_index + 1] += delta_z * cell_offset.x * (1.0 - cell_offset.y);
-            map[droplet_index + map_size as usize] +=
-                delta_z * (1.0 - cell_offset.x) * cell_offset.y;
-            map[droplet_index + 1 + map_size as usize] += delta_z * cell_offset.x * cell_offset.y;
-
-            // Update droplets speed and water content
-            water -= evaporate_speed;
-            if water < 0.0 {
-                break;
-            }
-        }
-    }
-    println!("Total eroded: {}", total_eroded);
-}
-
-fn get_z(tiles: &Vec<f32>, map_size: usize, x: usize, y: usize) -> f32 {
-    tiles[x + y * map_size]
-}
-
-// TODO: These NEED to be all put into a single file
-fn get_z_scaled_interpolated(tiles: &Vec<f32>, map_size: usize, x: f32, y: f32) -> f32 {
-    assert!(!x.is_nan());
-    // The coordinates of the tile's origin (bottom left corner)
-    let x_origin = x.floor();
-    let y_origin = y.floor();
-
-    // Coordinates inside the tile. [0,1]
-    let x_offset = x - x_origin;
-    let y_offset = y - y_origin;
-
-    let ray_origin = nalgebra_glm::vec3(x, y, 10000.0);
-    let ray_direction = nalgebra_glm::vec3(0.0, 0.0, -1.0);
-
-    if y_offset <= 1.0 - x_offset {
-        // In bottom triangle
-        let (retval, _t) = intersect(
-            nalgebra_glm::vec3(
-                x_origin,
-                y_origin,
-                get_z(tiles, map_size, x_origin as usize, y_origin as usize),
-            ),
-            nalgebra_glm::vec3(
-                x_origin + 1.0,
-                y_origin,
-                get_z(tiles, map_size, x_origin as usize + 1, y_origin as usize),
-            ),
-            nalgebra_glm::vec3(
-                x_origin,
-                y_origin + 1.0,
-                get_z(tiles, map_size, x_origin as usize, y_origin as usize + 1),
-            ),
-            ray_origin,
-            ray_direction,
-        )
-        .unwrap();
-        retval.z
-    } else {
-        // In top triangle
-        let (retval, _t) = intersect(
-            nalgebra_glm::vec3(
-                x_origin + 1.0,
-                y_origin,
-                get_z(tiles, map_size, x_origin as usize + 1, y_origin as usize),
-            ),
-            nalgebra_glm::vec3(
-                x_origin + 1.0,
-                y_origin + 1.0,
-                get_z(
-                    tiles,
-                    map_size,
-                    x_origin as usize + 1,
-                    y_origin as usize + 1,
-                ),
-            ),
-            nalgebra_glm::vec3(
-                x_origin,
-                y_origin + 1.0,
-                get_z(tiles, map_size, x_origin as usize, y_origin as usize + 1),
-            ),
-            ray_origin,
-            ray_direction,
-        )
-        .unwrap();
-        retval.z
-    }
-}
-
 fn intersect(
     v0: nalgebra_glm::Vec3,
     v1: nalgebra_glm::Vec3,
@@ -269,62 +391,6 @@ fn intersect(
     Some((intersection_point, t))
 }
 
-fn get_normal(tiles: &Vec<f32>, map_size: usize, x: f32, y: f32) -> nalgebra_glm::Vec3 {
-    assert!(!x.is_nan());
-    // The coordinates of the tile's origin (bottom left corner)
-    let x_origin = x.floor();
-    let y_origin = y.floor();
-
-    // Coordinates inside the tile. [0,1]
-    let x_offset = x - x_origin;
-    let y_offset = y - y_origin;
-
-    if y_offset <= 1.0 - x_offset {
-        // In bottom triangle
-        tri_normal(
-            nalgebra_glm::vec3(
-                x_origin,
-                y_origin,
-                get_z(tiles, map_size, x_origin as usize, y_origin as usize),
-            ),
-            nalgebra_glm::vec3(
-                x_origin + 1.0,
-                y_origin,
-                get_z(tiles, map_size, x_origin as usize + 1, y_origin as usize),
-            ),
-            nalgebra_glm::vec3(
-                x_origin,
-                y_origin + 1.0,
-                get_z(tiles, map_size, x_origin as usize, y_origin as usize + 1),
-            ),
-        )
-    } else {
-        // In top triangle
-        tri_normal(
-            nalgebra_glm::vec3(
-                x_origin + 1.0,
-                y_origin,
-                get_z(tiles, map_size, x_origin as usize + 1, y_origin as usize),
-            ),
-            nalgebra_glm::vec3(
-                x_origin + 1.0,
-                y_origin + 1.0,
-                get_z(
-                    tiles,
-                    map_size,
-                    x_origin as usize + 1,
-                    y_origin as usize + 1,
-                ),
-            ),
-            nalgebra_glm::vec3(
-                x_origin,
-                y_origin + 1.0,
-                get_z(tiles, map_size, x_origin as usize, y_origin as usize + 1),
-            ),
-        )
-    }
-}
-
 fn tri_normal(
     v0: nalgebra_glm::Vec3,
     v1: nalgebra_glm::Vec3,
@@ -334,4 +400,31 @@ fn tri_normal(
     let edge2 = v2 - v0;
     let normal = nalgebra_glm::cross(&edge1, &edge2).normalize();
     normal
+}
+
+fn get_influence<T>(map: &Vec<T>, map_size: usize, idx: usize, offset: nalgebra_glm::Vec2) -> T
+where
+    T: Mul<f32, Output = T> + AddAssign + Copy + Default,
+{
+    let mut influence: T = T::default();
+    influence += map[idx] * (1.0 - offset.x) * (1.0 - offset.y);
+    influence += map[idx + 1] * offset.x * (1.0 - offset.y);
+    influence += map[idx + map_size] * (1.0 - offset.x) * offset.y;
+    influence += map[idx + 1 + map_size] * offset.x * offset.y;
+    influence
+}
+
+fn incr_influence<T>(
+    map: &mut Vec<T>,
+    map_size: usize,
+    idx: usize,
+    offset: nalgebra_glm::Vec2,
+    amt: T,
+) where
+    T: Mul<f32, Output = T> + AddAssign + Copy + Default,
+{
+    map[idx] += amt * (1.0 - offset.x) * (1.0 - offset.y);
+    map[idx + 1] += amt * offset.x * (1.0 - offset.y);
+    map[idx + map_size] += amt * (1.0 - offset.x) * offset.y;
+    map[idx + 1 + map_size] += amt * offset.x * offset.y;
 }

@@ -1,6 +1,5 @@
-use std::f32::consts::PI;
+use std::{f32::consts::PI, time::Instant};
 
-use nalgebra_glm::pi;
 use rand::{Rng, SeedableRng};
 use sdl2::{keyboard::Scancode, pixels::Color};
 use specs::{prelude::*, Component, Join, ReadStorage};
@@ -20,9 +19,9 @@ use crate::{
     App, Scene,
 };
 
-const MAP_SIZE: usize = 448;
+const MAP_WIDTH: usize = 400;
 const CHUNK_SIZE: usize = 64;
-const UNIT_PER_METER: f32 = 0.1;
+const UNIT_PER_METER: f32 = 0.05;
 const PERSON_HEIGHT: f32 = 1.6764 * UNIT_PER_METER;
 
 pub const QUAD_DATA: &[u8] = include_bytes!("../../res/quad.obj");
@@ -143,9 +142,9 @@ impl<'a> System<'a> for PhysicsSystem {
             velocity.vel.z -= 0.005 * UNIT_PER_METER; // gravity
             position.pos += velocity.vel;
 
-            let feet_height = tile.map.get_z_interpolated(position.pos.x, position.pos.y);
+            let feet_height = tile.map.get_z_interpolated(position.pos.xy());
             if position.pos.z <= feet_height {
-                let normal = tile.map.get_normal(position.pos.x, position.pos.y);
+                let normal = tile.map.get_normal(position.pos.xy());
                 let d = feet_height - position.pos.z;
                 velocity.vel += normal * 0.1 * d; // normal from slopes
                 if nalgebra_glm::length(&velocity.vel.xy()) < 0.05 {
@@ -205,7 +204,7 @@ impl<'a> System<'a> for PlayerSystem {
             let walk_speed: f32 = if swimming {
                 1.0
             } else if curr_shift_state {
-                2.0
+                1.3
             } else {
                 1.0
             };
@@ -238,7 +237,8 @@ impl<'a> System<'a> for PlayerSystem {
                 println!("{}", opengl.camera.position);
             } else if walking {
                 // Move the player, this way moving diagonal isn't faster
-                velocity.vel += player_vel_vec.normalize() * walk_speed * PERSON_HEIGHT / 62.5;
+                velocity.vel +=
+                    player_vel_vec.normalize() * walk_speed * 4.317 * UNIT_PER_METER / 62.5;
             }
             player.facing -= view_speed * app.mouse_rel_x as f32;
             player.pitch = (player.pitch + view_speed * (app.mouse_rel_y as f32))
@@ -247,9 +247,7 @@ impl<'a> System<'a> for PlayerSystem {
 
             opengl.camera.position = position.pos + nalgebra_glm::vec3(0.0, 0.0, PERSON_HEIGHT);
 
-            let feet_height = tiles
-                .map
-                .get_z_interpolated(opengl.camera.position.x, opengl.camera.position.y);
+            let feet_height = tiles.map.get_z_interpolated(opengl.camera.position.xy());
             player.feet_on_ground = opengl.camera.position.z - PERSON_HEIGHT <= feet_height;
             if !player.feet_on_ground {
                 velocity.vel.x *= 0.8;
@@ -302,7 +300,7 @@ impl<'a> System<'a> for PlayerSystem {
             // 35 ticks per step
             if walking
                 && player.feet_on_ground
-                && (app.ticks - player.t_last_walk_played) > 35 / walk_speed as usize
+                && (app.ticks - player.t_last_walk_played) as f32 > 35.0 / walk_speed
             {
                 player.t_last_walk_played = app.ticks;
                 audio.audio_mgr.play_sound("res/walk.ogg".to_string(), 35);
@@ -410,7 +408,7 @@ impl<'a> System<'a> for ProjectileSystem {
         (mut positions, mut projectiles, tile, audio, opengl, entities): Self::SystemData,
     ) {
         for (position, _, entity) in (&mut positions, &mut projectiles, &entities).join() {
-            let tile_z: f32 = tile.map.get_z_interpolated(position.pos.x, position.pos.y);
+            let tile_z: f32 = tile.map.get_z_interpolated(position.pos.xy());
             if position.pos.z < tile_z {
                 entities.delete(entity).unwrap();
                 let distance = nalgebra_glm::length(&(opengl.camera.position - position.pos));
@@ -473,9 +471,7 @@ impl<'a> System<'a> for CollisionSystem {
                     entities.delete(*proj_entity).unwrap();
                     mob_velocity.vel.x += proj_velocity.x;
                     mob_velocity.vel.y += proj_velocity.y;
-                    let tile_z: f32 = tiles
-                        .map
-                        .get_z_interpolated(mob_position.pos.x, mob_position.pos.y);
+                    let tile_z: f32 = tiles.map.get_z_interpolated(mob_position.pos.xy());
                     if mob_position.pos.z + 0.01 <= tile_z {
                         mob_velocity.vel.z += 0.1 * UNIT_PER_METER;
                     }
@@ -577,26 +573,26 @@ impl<'a> System<'a> for CylindricalCollisionSystem {
     );
 
     fn run(&mut self, (cyl_radii, positions, mut velocities, entities): Self::SystemData) {
-        let mut cyl_data = Vec::new();
-        for (cyl_radius, cyl_position, cyl_entity) in (&cyl_radii, &positions, &entities).join() {
-            cyl_data.push((cyl_radius.radius, cyl_position.pos.clone(), cyl_entity));
-        }
+        // let mut cyl_data = Vec::new();
+        // for (cyl_radius, cyl_position, cyl_entity) in (&cyl_radii, &positions, &entities).join() {
+        //     cyl_data.push((cyl_radius.radius, cyl_position.pos.clone(), cyl_entity));
+        // }
 
-        for (cyl_radius, cyl_position, cyl_velocity, cyl_entity) in
-            (&cyl_radii, &positions, &mut velocities, &entities).join()
-        {
-            for data in &cyl_data {
-                if data.2 == cyl_entity {
-                    continue;
-                }
-                let from_cyl = cyl_position.pos - data.1;
-                if nalgebra_glm::length(&from_cyl.xy()) <= cyl_radius.radius + data.0 {
-                    let bounce_impulse = from_cyl.xy().scale(0.05);
-                    cyl_velocity.vel.x += bounce_impulse.x;
-                    cyl_velocity.vel.y += bounce_impulse.y;
-                }
-            }
-        }
+        // for (cyl_radius, cyl_position, cyl_velocity, cyl_entity) in
+        //     (&cyl_radii, &positions, &mut velocities, &entities).join()
+        // {
+        //     for data in &cyl_data {
+        //         if data.2 == cyl_entity {
+        //             continue;
+        //         }
+        //         let from_cyl = cyl_position.pos - data.1;
+        //         if nalgebra_glm::length(&from_cyl.xy()) <= cyl_radius.radius + data.0 {
+        //             let bounce_impulse = from_cyl.xy().scale(0.05);
+        //             cyl_velocity.vel.x += bounce_impulse.x;
+        //             cyl_velocity.vel.y += bounce_impulse.y;
+        //         }
+        //     }
+        // }
     }
 }
 
@@ -663,35 +659,33 @@ impl Island {
 
         // Setup island map
         println!("Setting up island...");
-        let mut rng = rand::rngs::StdRng::seed_from_u64(0);
-        let mut map = PerlinMap::new(MAP_SIZE, 0.01, rng.gen());
-        let mut amplitude = 0.01;
-        let mut part = 0.5;
-        for i in 0..10 {
-            println!("  - {}/10", i);
-            let mut other_map = PerlinMap::new(MAP_SIZE, amplitude, rng.gen());
-            other_map.normalize();
-            for i in 0..other_map.data.len() {
-                map.data[i] += (2.0 * other_map.data[i] - 1.0) * part;
-            }
-            amplitude *= 2.0;
-            part *= 0.5;
-        }
+        let mut rng = rand::rngs::StdRng::from_entropy();
+        let mut map = PerlinMap::new(MAP_WIDTH, 0.03, rng.gen(), 1.0);
+        // map.normalize();
+
         println!("Creating bulge...");
-        create_bulge(&mut map);
-        for i in 0..map.data.len() {
-            map.data[i] = ((map.data[i] - 0.5) * 0.35) + 0.5;
-        }
+        map.normalize();
+        map.create_bulge();
+
         println!("Eroding...");
-        let moist_map = map.erode(100 as f32, rng.gen());
-        let height = map.get_z_interpolated((MAP_SIZE / 2) as f32, (MAP_SIZE / 2) as f32);
+        let start = Instant::now();
+        map.erode(20_000, rng.gen());
+        println!("Erode time: {:?}", start.elapsed());
+
+        let height = map.get_z_interpolated(nalgebra_glm::vec2(
+            (MAP_WIDTH / 2) as f32,
+            (MAP_WIDTH / 2) as f32,
+        ));
         let mut spawn_point =
-            nalgebra_glm::vec3((MAP_SIZE / 2) as f32, (MAP_SIZE / 2) as f32, height);
-        for y in 0..MAP_SIZE / 2 {
-            let height = map.get_z_interpolated((MAP_SIZE / 2) as f32, (y + MAP_SIZE / 2) as f32);
+            nalgebra_glm::vec3((MAP_WIDTH / 2) as f32, (MAP_WIDTH / 2) as f32, height);
+        for y in 0..MAP_WIDTH / 2 {
+            let height = map.get_z_interpolated(nalgebra_glm::vec2(
+                (MAP_WIDTH / 2) as f32,
+                (y + MAP_WIDTH / 2) as f32,
+            ));
             if height >= 0.5 {
                 spawn_point =
-                    nalgebra_glm::vec3((MAP_SIZE / 2) as f32, (y + MAP_SIZE / 2) as f32, height);
+                    nalgebra_glm::vec3((MAP_WIDTH / 2) as f32, (y + MAP_WIDTH / 2) as f32, height);
                 break;
             }
         }
@@ -720,9 +714,9 @@ impl Island {
         ));
 
         // Add entities
-        for chunk_y in (0..(MAP_SIZE)).step_by(CHUNK_SIZE) {
-            for chunk_x in (0..(MAP_SIZE)).step_by(CHUNK_SIZE) {
-                let (i, v, n, u, c) = create_mesh(&map, &moist_map, chunk_x, chunk_y);
+        for chunk_y in (0..(MAP_WIDTH)).step_by(CHUNK_SIZE) {
+            for chunk_x in (0..(MAP_WIDTH)).step_by(CHUNK_SIZE) {
+                let (i, v, n, u, c) = create_mesh(&map, chunk_x, chunk_y);
                 let grass_mesh = mesh_mgr.add_mesh(Mesh::new(i, vec![v, n, u, c]));
                 world
                     .create_entity()
@@ -730,7 +724,7 @@ impl Island {
                         mesh_id: grass_mesh,
                         scale: nalgebra_glm::vec3(1.0, 1.0, 1.0),
                         texture: Texture::from_png("res/grass.png"),
-                        render_dist: Some(CHUNK_SIZE as f32 * 2.0),
+                        render_dist: Some(CHUNK_SIZE as f32 * 4.0),
                     })
                     .with(PositionComponent {
                         pos: nalgebra_glm::vec3(chunk_x as f32, chunk_y as f32, 0.0),
@@ -770,31 +764,30 @@ impl Island {
                 quad_mesh,
             ))
             .build();
-        for _ in 0..(MAP_SIZE * 2) {
+        for _ in 0..(MAP_WIDTH * 4) {
             // Add all the trees
             let mut attempts = 0;
             loop {
-                let (x, y) = (
-                    rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
-                    rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
+                let pos = nalgebra_glm::vec2(
+                    rng.gen::<f32>() * (MAP_WIDTH as f32 - 1.0),
+                    rng.gen::<f32>() * (MAP_WIDTH as f32 - 1.0),
                 );
-                let height = map.get_z_interpolated(x, y);
-                let dot_prod = map.get_dot_prod(x, y).abs();
+                let height = map.get_z_interpolated(pos);
+                let dot_prod = map.get_dot_prod(pos).abs();
                 let variation = rng.gen_range(0.0..1.0);
-                let vegatation =
-                    (moist_map[(x) as usize + MAP_SIZE * (y) as usize] * 0.1).clamp(0.0, 1.0);
-                let scale = (15.0 + 30.0 * vegatation * variation) * UNIT_PER_METER;
-                if height >= 1.0 && dot_prod > 0.99 && vegatation > 0.3 {
+                let vegatation = map.flow(pos);
+                let scale = (15.0 + 70.0 * variation) * UNIT_PER_METER;
+                if height >= 1.0 && dot_prod > 0.99 && vegatation > 20.0 {
                     world
                         .create_entity()
                         .with(MeshComponent {
                             mesh_id: tree_mesh,
                             scale: nalgebra_glm::vec3(scale, scale, scale),
                             texture: Texture::from_png("res/tree.png"),
-                            render_dist: Some(CHUNK_SIZE as f32),
+                            render_dist: Some(CHUNK_SIZE as f32 * 4.0),
                         })
                         .with(PositionComponent {
-                            pos: nalgebra_glm::vec3(x, y, height),
+                            pos: nalgebra_glm::vec3(pos.x, pos.y, height),
                         })
                         .with(CastsShadowComponent {})
                         .with(CylinderRadiusComponent {
@@ -809,21 +802,19 @@ impl Island {
                 attempts += 1;
             }
         }
-        for _ in 0..(MAP_SIZE * 2) {
+        for _ in 0..(MAP_WIDTH * 2) {
             // Add all the bushes
             let mut attempts = 0;
             loop {
-                let (x, y) = (
-                    rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
-                    rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
+                let pos = nalgebra_glm::vec2(
+                    rng.gen::<f32>() * (MAP_WIDTH as f32 - 1.0),
+                    rng.gen::<f32>() * (MAP_WIDTH as f32 - 1.0),
                 );
-                let height = map.get_z_interpolated(x, y);
-                let dot_prod = map.get_dot_prod(x, y).abs();
+                let height = map.get_z_interpolated(pos);
+                let dot_prod = map.get_dot_prod(pos).abs();
                 let variation = rng.gen_range(0.0..1.0);
-                if height >= 0.66
-                    && dot_prod >= 0.8
-                    && dot_prod <= 0.9
-                    && moist_map[(x) as usize + MAP_SIZE * (y) as usize] > 1.0
+                if height >= 0.66 && dot_prod >= 0.8 && dot_prod <= 0.9
+                //  && map.flow(pos) > 1.0
                 {
                     world
                         .create_entity()
@@ -838,7 +829,7 @@ impl Island {
                             render_dist: Some(CHUNK_SIZE as f32 * 2.0),
                         })
                         .with(PositionComponent {
-                            pos: nalgebra_glm::vec3(x, y, height),
+                            pos: nalgebra_glm::vec3(pos.x, pos.y, height),
                         })
                         .with(CastsShadowComponent {})
                         .build();
@@ -850,17 +841,17 @@ impl Island {
                 attempts += 1;
             }
         }
-        const NUM_TREASURE: usize = MAP_SIZE / 51;
+        const NUM_TREASURE: usize = MAP_WIDTH / 51;
         for i in 0..NUM_TREASURE {
             // Add all the treasure boxes
             let mut attempts = 0;
             loop {
-                let (treasure_x, treasure_y) = (
-                    rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
-                    rng.gen::<f32>() * (MAP_SIZE as f32 - 1.0),
+                let pos = nalgebra_glm::vec2(
+                    rng.gen::<f32>() * (MAP_WIDTH as f32 - 1.0),
+                    rng.gen::<f32>() * (MAP_WIDTH as f32 - 1.0),
                 );
-                let height = map.get_z_interpolated(treasure_x, treasure_y);
-                let dot_prod = map.get_dot_prod(treasure_x, treasure_y).abs();
+                let height = map.get_z_interpolated(pos);
+                let dot_prod = map.get_dot_prod(pos).abs();
                 if height >= 0.5 && height <= 0.8 && height < 0.75 * dot_prod {
                     // Add treasure
                     let treasure_entity = world
@@ -872,7 +863,7 @@ impl Island {
                             render_dist: Some(CHUNK_SIZE as f32 * 2.0),
                         })
                         .with(PositionComponent {
-                            pos: nalgebra_glm::vec3(treasure_x, treasure_y, height),
+                            pos: nalgebra_glm::vec3(pos.x, pos.y, height),
                         })
                         .with(CastsShadowComponent {})
                         .build();
@@ -902,8 +893,8 @@ impl Island {
                     const NUM_MOBS: usize = 5;
                     for _ in 0..NUM_MOBS {
                         let (x, y) = (
-                            rng.gen::<f32>() - 0.5 + treasure_x,
-                            rng.gen::<f32>() - 0.5 + treasure_y,
+                            rng.gen::<f32>() - 0.5 + pos.x,
+                            rng.gen::<f32>() - 0.5 + pos.y,
                         );
                         world
                             .create_entity()
@@ -971,7 +962,7 @@ impl Island {
         world.insert(OpenGlResource {
             camera: Camera::new(
                 spawn_point,
-                nalgebra_glm::vec3(MAP_SIZE as f32 / 2.0, MAP_SIZE as f32 / 2.0, 0.5),
+                nalgebra_glm::vec3(MAP_WIDTH as f32 / 2.0, MAP_WIDTH as f32 / 2.0, 0.5),
                 nalgebra_glm::vec3(0.0, 0.0, 1.0),
                 ProjectionKind::Perspective { fov: 0.9 },
             ),
@@ -1005,8 +996,8 @@ impl Island {
         let sun_scale = 30.0;
         world.insert(SunResource::new(
             Camera::new(
-                nalgebra_glm::vec3(MAP_SIZE as f32 / -2.0, 0.0, 2.0),
-                nalgebra_glm::vec3(MAP_SIZE as f32 / 2.0, MAP_SIZE as f32 / 2.0, 0.5),
+                nalgebra_glm::vec3(MAP_WIDTH as f32 / -2.0, 0.0, 2.0),
+                nalgebra_glm::vec3(MAP_WIDTH as f32 / 2.0, MAP_WIDTH as f32 / 2.0, 0.5),
                 nalgebra_glm::vec3(0.0, 0.0, 1.0),
                 ProjectionKind::Orthographic {
                     left: -sun_scale,
@@ -1034,26 +1025,8 @@ impl Island {
     }
 }
 
-fn create_bulge(map: &mut PerlinMap) {
-    for y in 0..MAP_SIZE {
-        for x in 0..MAP_SIZE {
-            let z = map.data[x + y * MAP_SIZE];
-            let xo = (x as f32) - (MAP_SIZE as f32) / 2.0;
-            let yo = (y as f32) - (MAP_SIZE as f32) / 2.0;
-            let d = ((xo * xo + yo * yo) as f32).sqrt();
-            let s: f32 = 0.1; //z * 0.01 + 0.2 - 0.2 * (d / MAP_SIZE as f32); // Tweak me to make the island pointier
-            let m: f32 = MAP_SIZE as f32 * 0.8; // Tweak me to make the island wider
-                                                // let bulge: f32 = (1.0 / (2.0 * pi::<f32>() * s.powf(2.0)))
-                                                //     * (-((d / m).powf(4.0)) / (2.0 * s.powf(2.0))).exp();
-            let bulge = (-(d - 135.0) / 100.0).min(0.01);
-            map.data[x + y * MAP_SIZE] = 32.0 * z.powf(3.0) + 32.0 * bulge;
-        }
-    }
-}
-
 fn create_mesh(
     map: &PerlinMap,
-    moist_map: &Vec<f32>,
     chunk_x: usize,
     chunk_y: usize,
 ) -> (Vec<u32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
@@ -1072,7 +1045,6 @@ fn create_mesh(
             let offsets = vec![(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)];
             add_triangle(
                 map,
-                moist_map,
                 &mut indices,
                 &mut vertices,
                 &mut normals,
@@ -1090,7 +1062,6 @@ fn create_mesh(
             let offsets = vec![(1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
             add_triangle(
                 map,
-                moist_map,
                 &mut indices,
                 &mut vertices,
                 &mut normals,
@@ -1111,7 +1082,6 @@ fn create_mesh(
 
 fn add_triangle(
     tiles: &PerlinMap,
-    moist_map: &Vec<f32>,
     indices: &mut Vec<u32>,
     vertices: &mut Vec<f32>,
     normals: &mut Vec<f32>,
@@ -1128,9 +1098,9 @@ fn add_triangle(
     let tri_verts: Vec<nalgebra_glm::Vec3> = offsets
         .iter()
         .map(|(xo, yo)| {
-            let z = tiles.get_z((x + xo) as usize, (y + yo) as usize);
+            let z = tiles.height(nalgebra_glm::vec2(x + xo, y + yo));
             let mapval = nalgebra_glm::vec3(x + xo, y + yo, z);
-            sum_z += tiles.get_z((x + xo) as usize, (y + yo) as usize);
+            sum_z += tiles.height(nalgebra_glm::vec2(x + xo, y + yo));
             add_vertex(vertices, x + xo - chunk_x, y + yo - chunk_y, z);
             add_uv(uv, *xo as f32, *yo as f32);
             indices.push(*i);
@@ -1155,9 +1125,9 @@ fn add_triangle(
     for _ in 0..3 {
         if avg_z < 0.5 || (avg_z < 0.9 * dot_prod && 0.9 < dot_prod) {
             // sand
-            colors.push(0.9);
-            colors.push(0.8);
-            colors.push(0.7);
+            colors.push(0.86);
+            colors.push(0.74);
+            colors.push(0.62);
         } else if dot_prod < 0.9 {
             // stone
             colors.push(0.5);
@@ -1165,10 +1135,9 @@ fn add_triangle(
             colors.push(0.4);
         } else {
             // grass
-            let moist_val = 1.0 - (moist_map[x as usize + y as usize * MAP_SIZE]).clamp(0.0, 1.0);
-            colors.push(0.27 + moist_val * 0.2);
-            colors.push(0.36 + moist_val * 0.1);
-            colors.push(0.19 + moist_val * 0.05);
+            colors.push(0.27);
+            colors.push(0.36);
+            colors.push(0.19);
         }
     }
 }
